@@ -57,5 +57,22 @@ var assetsCreados = [
         "tamanho": "8.09 KB",
         "status": "nenhum",
         "fail": "none"
+    },
+    {
+        "id": 1786857690794,
+        "nome": "Walk R6 #2",
+        "categoria": [
+            "ANIMATIONS"
+        ],
+        "descricao": "Walk animation for R6.",
+        "descricaoLonga": "Walk animation for R6.",
+        "imagens": [
+            "https://streamable.com/kuh1rd"
+        ],
+        "linkDownload": "https://www.mediafire.com/file/c40pzxqdnosxicz/WalkAnimation-V2.rbxm/file",
+        "formato": ".rbxm",
+        "tamanho": "13.66 KB",
+        "status": "nenhum",
+        "fail": "none"
     }
 ];
