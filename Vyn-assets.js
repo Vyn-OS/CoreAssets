@@ -91,5 +91,22 @@ var assetsCreados = [
         "tamanho": "15.3 KB",
         "status": "nenhum",
         "fail": "none"
+    },
+    {
+        "id": 1786893003537,
+        "nome": "MoonAnimator 2",
+        "categoria": [
+            "ANIMATIONS"
+        ],
+        "descricao": "With this file you can create animations",
+        "descricaoLonga": "With this file you can create animations and more for your game\n",
+        "imagens": [
+            "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSb2XRQZErV-qy4MclVPYiMsLWoEBkYl_H8qHQmrF9biA&s=10"
+        ],
+        "linkDownload": "https://cdn.discordapp.com/attachments/1523158956153901277/1523158956527190118/moonyV4.rbxmx?ex=6a831f92&is=6a81ce12&hm=49e8c542ecf1e198fc5c390f04939b76f6f1c822ca0dabf9e4c518ca149e666d&",
+        "formato": ".rbxm",
+        "tamanho": "10.00 MB",
+        "status": "nenhum",
+        "fail": "none"
     }
 ];
