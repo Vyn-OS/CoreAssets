@@ -1,74 +1,46 @@
+const WORKER_URL = 'https://coreassets-admin.normal8607.workers.dev';
 
-const GITHUB_CONFIG = {
-    owner: 'Vyn-OS',
-    repo: 'CoreAssets',
-    branch: 'main'
-};
-
-function isGithubConfigured() {
-    return GITHUB_CONFIG.owner && GITHUB_CONFIG.owner !== 'TU_USUARIO_GITHUB'
-        && GITHUB_CONFIG.repo && GITHUB_CONFIG.repo !== 'TU_REPO';
+function getSessionToken() {
+    return sessionStorage.getItem('admin_session');
 }
 
-function getGithubToken() {
-    let token = sessionStorage.getItem('gh_pat');
-    if (!token) {
-        token = window.prompt('Pega tu GitHub Token (permiso de escritura en este repo):');
-        if (token) sessionStorage.setItem('gh_pat', token.trim());
-    }
-    return token ? token.trim() : null;
+function setSessionToken(token) {
+    sessionStorage.setItem('admin_session', token);
 }
 
-function clearGithubToken() {
-    sessionStorage.removeItem('gh_pat');
+function clearSessionToken() {
+    sessionStorage.removeItem('admin_session');
 }
 
-function b64EncodeUnicode(str) {
-    return btoa(unescape(encodeURIComponent(str)));
-}
-
-async function githubApiRequest(path, options = {}) {
-    const token = getGithubToken();
-    if (!token) throw new Error('Falta el token de GitHub');
-    const res = await fetch(`https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${path}`, {
-        ...options,
-        headers: {
-            'Authorization': `Bearer ${token}`,
-            'Accept': 'application/vnd.github+json',
-            ...(options.headers || {})
-        }
-    });
-    if (res.status === 401 || res.status === 403) {
-        clearGithubToken();
-        throw new Error('Token inválido o sin permisos. Vuelve a intentar y pega uno válido.');
-    }
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.message || `Error de GitHub API (${res.status})`);
-    }
-    return res.json();
-}
-
-async function saveFileToGithub(path, content, commitMessage) {
-    let sha = null;
-    try {
-        const current = await githubApiRequest(`${path}?ref=${GITHUB_CONFIG.branch}`);
-        sha = current.sha;
-    } catch (e) {
-    }
-
-    const body = {
-        message: commitMessage,
-        content: b64EncodeUnicode(content),
-        branch: GITHUB_CONFIG.branch
-    };
-    if (sha) body.sha = sha;
-
-    return githubApiRequest(path, {
-        method: 'PUT',
+async function workerLogin(password) {
+    const res = await fetch(`${WORKER_URL}/login`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify({ password })
     });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Login fallido');
+    return data.token;
+}
+
+async function workerSave(endpoint, content, message) {
+    const token = getSessionToken();
+    if (!token) throw new Error('Sesión no iniciada');
+    const res = await fetch(`${WORKER_URL}${endpoint}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ content, message })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+        clearSessionToken();
+        throw new Error('Sesión expirada, vuelve a iniciar sesión.');
+    }
+    if (!res.ok) throw new Error(data.error || `Error del servidor (${res.status})`);
+    return data;
 }
 
 function fromFileFormat(m) {
@@ -110,124 +82,13 @@ let assets = (typeof assetsCreados !== 'undefined' ? assetsCreados : []).map(fro
 let assetToDelete = null;
 let assetToDeleteSource = 'admin';
 
-let assetsFileHandle = null;
-let pendingReconnectHandler = null;
-
-function idbOpen() {
-    return new Promise((resolve, reject) => {
-        const req = indexedDB.open('assetRobloxDB', 1);
-        req.onupgradeneeded = () => req.result.createObjectStore('handles');
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-    });
-}
-
-async function idbSet(key, value) {
-    const db = await idbOpen();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction('handles', 'readwrite');
-        tx.objectStore('handles').put(value, key);
-        tx.oncomplete = resolve;
-        tx.onerror = () => reject(tx.error);
-    });
-}
-
-async function idbGet(key) {
-    const db = await idbOpen();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction('handles', 'readonly');
-        const req = tx.objectStore('handles').get(key);
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-    });
-}
-
-function saveConnectedFileName(key, name) {
-    try { localStorage.setItem(key, name); } catch (e) {  }
-}
-function getConnectedFileName(key) {
-    try { return localStorage.getItem(key); } catch (e) { return null; }
-}
-
 function setFileStatus(connected, label) {
     const dot = document.getElementById('fileStatusDot');
     const text = document.getElementById('fileStatusText');
-    const box = document.getElementById('fileStatusBox');
     if (!dot || !text) return;
-    dot.classList.toggle('bg-red-500', !connected);
-    dot.classList.toggle('bg-green-500', connected);
+    dot.classList.remove('bg-slate-600', 'bg-red-500', 'bg-green-500');
+    dot.classList.add(connected ? 'bg-green-500' : 'bg-red-500');
     text.innerText = label;
-    if (box) box.classList.toggle('hidden', connected);
-}
-
-async function connectAssetsFile(silent = false) {
-    if (!window.showOpenFilePicker) {
-        if (!silent) showNotify("Tu navegador no soporta guardado automático (usa Chrome o Edge).", "error");
-        return;
-    }
-    if (pendingReconnectHandler) {
-        document.removeEventListener('click', pendingReconnectHandler);
-        pendingReconnectHandler = null;
-    }
-    try {
-        const [handle] = await window.showOpenFilePicker({
-            types: [{ description: 'Archivo JS', accept: { 'text/javascript': ['.js'] } }],
-            excludeAcceptAllOption: false,
-            multiple: false
-        });
-        assetsFileHandle = handle;
-        await idbSet('assetsFileHandle', handle);
-        saveConnectedFileName('assetsFileName', handle.name);
-        setFileStatus(true, `Connected to ${handle.name}`);
-        if (!silent) showNotify("Vyn-assets.js conectado ✔️");
-    } catch (e) {
-
-    }
-}
-
-async function tryReconnectAssetsFile() {
-    if (!document.getElementById('fileStatusDot')) return;
-    if (!window.showOpenFilePicker) {
-        setFileStatus(false, "Browser without auto-save support");
-        return;
-    }
-    try {
-        const handle = await idbGet('assetsFileHandle');
-        if (!handle) {
-            const savedName = getConnectedFileName('assetsFileName');
-            setFileStatus(false, savedName ? `Not connected to ${savedName}` : "Not connected to Vyn-assets.js");
-            return;
-        }
-
-        const perm = await handle.queryPermission({ mode: 'readwrite' });
-        if (perm === 'granted') {
-            assetsFileHandle = handle;
-            saveConnectedFileName('assetsFileName', handle.name);
-            setFileStatus(true, `Connected to ${handle.name}`);
-            return;
-        }
-
-        setFileStatus(false, `Click anywhere to reconnect to ${handle.name}`);
-        pendingReconnectHandler = () => { pendingReconnectHandler = null; silentReconnect(handle); };
-        document.addEventListener('click', pendingReconnectHandler, { once: true });
-    } catch (e) {
-        const savedName = getConnectedFileName('assetsFileName');
-        setFileStatus(false, savedName ? `Not connected to ${savedName}` : "Not connected to Vyn-assets.js");
-    }
-}
-
-async function silentReconnect(handle) {
-    try {
-        const perm = await handle.requestPermission({ mode: 'readwrite' });
-        if (perm === 'granted') {
-            assetsFileHandle = handle;
-            setFileStatus(true, `Connected to ${handle.name}`);
-        } else {
-            setFileStatus(false, "Reconnect required (click Connect File)");
-        }
-    } catch (e) {
-        setFileStatus(false, "Reconnect required (click Connect File)");
-    }
 }
 
 function generateAssetsFileContent(assetsArr) {
@@ -235,141 +96,26 @@ function generateAssetsFileContent(assetsArr) {
     return "var assetsCreados = " + JSON.stringify(data, null, 4) + ";\n";
 }
 
-function downloadAssetsFile(content) {
-    const blob = new Blob([content], { type: 'text/javascript' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'Vyn-assets.js';
-    a.click();
-    URL.revokeObjectURL(url);
-}
-
 async function persistAssets() {
     const content = generateAssetsFileContent(assets);
 
-    if (isGithubConfigured()) {
-        try {
-            await saveFileToGithub('Vyn-assets.js', content, 'Update assets from admin panel');
-            setFileStatus(true, 'Publicado en GitHub ✔️');
-            showNotify("Cambios publicados en GitHub. La web se actualiza en ~1 min.");
-            return;
-        } catch (e) {
-            console.error(e);
-            showNotify("Error al publicar en GitHub: " + e.message, "error");
-        }
-    }
-
-    if (!assetsFileHandle) {
-        try {
-            const handle = await idbGet('assetsFileHandle');
-            if (handle) assetsFileHandle = handle;
-        } catch (e) {  }
-    }
-
-    if (!assetsFileHandle) {
-        showNotify("Conecta primero Vyn-assets.js con el botón 🔗 Connect File.", "error");
-        return;
-    }
-
     try {
-        let perm = await assetsFileHandle.queryPermission({ mode: 'readwrite' });
-        if (perm !== 'granted') perm = await assetsFileHandle.requestPermission({ mode: 'readwrite' });
-        if (perm !== 'granted') throw new Error('permiso denegado');
-
-        const writable = await assetsFileHandle.createWritable();
-        await writable.write(content);
-        await writable.close();
-        setFileStatus(true, `Saved to ${assetsFileHandle.name}`);
+        await workerSave('/save-assets', content, 'Update assets from admin panel');
+        setFileStatus(true, 'Publicado ✔️');
+        showNotify("Cambios publicados. La web se actualiza en ~1 min.");
     } catch (e) {
         console.error(e);
-        downloadAssetsFile(content);
-        showNotify("No se pudo guardar automáticamente. Se descargó el archivo, reemplázalo manualmente en tu carpeta.", "error");
-    }
-}
-
-let libraryFileHandle = null;
-let pendingLibraryReconnectHandler = null;
-
-async function connectLibraryFile(silent = false) {
-    if (!window.showOpenFilePicker) {
-        if (!silent) showNotify("Tu navegador no soporta guardado automático (usa Chrome o Edge).", "error");
-        return;
-    }
-    if (pendingLibraryReconnectHandler) {
-        document.removeEventListener('click', pendingLibraryReconnectHandler);
-        pendingLibraryReconnectHandler = null;
-    }
-    try {
-        const [handle] = await window.showOpenFilePicker({
-            types: [{ description: 'Archivo JS', accept: { 'text/javascript': ['.js'] } }],
-            excludeAcceptAllOption: false,
-            multiple: false
-        });
-        libraryFileHandle = handle;
-        await idbSet('libraryFileHandle', handle);
-        saveConnectedFileName('libraryFileName', handle.name);
-        setLibraryFileStatus(true, `Connected to ${handle.name}`);
-        if (!silent) showNotify("Vyn-body.js conectado ✔️");
-    } catch (e) {
-
+        showNotify("Error al publicar: " + e.message, "error");
     }
 }
 
 function setLibraryFileStatus(connected, label) {
     const dot = document.getElementById('libraryFileStatusDot');
     const text = document.getElementById('libraryFileStatusText');
-    const box = document.getElementById('libraryFileStatusBox');
     if (!dot || !text) return;
-    dot.classList.toggle('bg-red-500', !connected);
-    dot.classList.toggle('bg-green-500', connected);
+    dot.classList.remove('bg-slate-600', 'bg-red-500', 'bg-green-500');
+    dot.classList.add(connected ? 'bg-green-500' : 'bg-red-500');
     text.innerText = label;
-    if (box) box.classList.toggle('hidden', connected);
-}
-
-async function tryReconnectLibraryFile() {
-    if (!document.getElementById('libraryFileStatusDot')) return;
-    if (!window.showOpenFilePicker) {
-        setLibraryFileStatus(false, "Browser without auto-save support");
-        return;
-    }
-    try {
-        const handle = await idbGet('libraryFileHandle');
-        if (!handle) {
-            const savedName = getConnectedFileName('libraryFileName');
-            setLibraryFileStatus(false, savedName ? `Not connected to ${savedName}` : "Not connected to Vyn-body.js");
-            return;
-        }
-
-        const perm = await handle.queryPermission({ mode: 'readwrite' });
-        if (perm === 'granted') {
-            libraryFileHandle = handle;
-            saveConnectedFileName('libraryFileName', handle.name);
-            setLibraryFileStatus(true, `Connected to ${handle.name}`);
-            return;
-        }
-
-        setLibraryFileStatus(false, `Click anywhere to reconnect to ${handle.name}`);
-        pendingLibraryReconnectHandler = () => { pendingLibraryReconnectHandler = null; silentReconnectLibrary(handle); };
-        document.addEventListener('click', pendingLibraryReconnectHandler, { once: true });
-    } catch (e) {
-        const savedName = getConnectedFileName('libraryFileName');
-        setLibraryFileStatus(false, savedName ? `Not connected to ${savedName}` : "Not connected to Vyn-body.js");
-    }
-}
-
-async function silentReconnectLibrary(handle) {
-    try {
-        const perm = await handle.requestPermission({ mode: 'readwrite' });
-        if (perm === 'granted') {
-            libraryFileHandle = handle;
-            setLibraryFileStatus(true, `Connected to ${handle.name}`);
-        } else {
-            setLibraryFileStatus(false, "Reconnect required (click Connect Library File)");
-        }
-    } catch (e) {
-        setLibraryFileStatus(false, "Reconnect required (click Connect Library File)");
-    }
 }
 
 function generateLibraryFileContent(itemsArr) {
@@ -377,56 +123,16 @@ function generateLibraryFileContent(itemsArr) {
     return "bibliotecaMeshes.push(\n" + JSON.stringify(data, null, 4).replace(/^\[/, '').replace(/\]$/, '') + "\n);\n";
 }
 
-function downloadLibraryFile(content) {
-    const blob = new Blob([content], { type: 'text/javascript' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'Vyn-body.js';
-    a.click();
-    URL.revokeObjectURL(url);
-}
-
 async function persistLibraryAssets() {
     const content = generateLibraryFileContent(libraryAssets);
 
-    if (isGithubConfigured()) {
-        try {
-            await saveFileToGithub('Vyn-body.js', content, 'Update library assets from admin panel');
-            setLibraryFileStatus(true, 'Publicado en GitHub ✔️');
-            showNotify("Cambios publicados en GitHub. La web se actualiza en ~1 min.");
-            return;
-        } catch (e) {
-            console.error(e);
-            showNotify("Error al publicar en GitHub: " + e.message, "error");
-        }
-    }
-
-    if (!libraryFileHandle) {
-        try {
-            const handle = await idbGet('libraryFileHandle');
-            if (handle) libraryFileHandle = handle;
-        } catch (e) {  }
-    }
-
-    if (!libraryFileHandle) {
-        showNotify("Conecta primero Vyn-body.js con el botón 🔗 Connect Library File.", "error");
-        return;
-    }
-
     try {
-        let perm = await libraryFileHandle.queryPermission({ mode: 'readwrite' });
-        if (perm !== 'granted') perm = await libraryFileHandle.requestPermission({ mode: 'readwrite' });
-        if (perm !== 'granted') throw new Error('permiso denegado');
-
-        const writable = await libraryFileHandle.createWritable();
-        await writable.write(content);
-        await writable.close();
-        setLibraryFileStatus(true, `Saved to ${libraryFileHandle.name}`);
+        await workerSave('/save-library', content, 'Update library assets from admin panel');
+        setLibraryFileStatus(true, 'Publicado ✔️');
+        showNotify("Cambios publicados. La web se actualiza en ~1 min.");
     } catch (e) {
         console.error(e);
-        downloadLibraryFile(content);
-        showNotify("No se pudo guardar automáticamente. Se descargó Vyn-body.js, reemplázalo manualmente en tu carpeta.", "error");
+        showNotify("Error al publicar: " + e.message, "error");
     }
 }
 
@@ -618,11 +324,12 @@ function updateAdminQuickLabel() {
     label.classList.toggle('opacity-0', input.value.length > 0);
 }
 
-function checkAdminQuickLogin(value) {
-    if (value === 'mdrg') {
-        sessionStorage.setItem('adminAutoLogin', '1');
+async function checkAdminQuickLogin(value) {
+    try {
+        const token = await workerLogin(value);
+        setSessionToken(token);
         location.href = 'admin.html';
-    } else {
+    } catch (e) {
         showNotify("Incorrect password!", "error");
         const input = document.getElementById('adminQuickPass');
         if (input) { input.value = ''; updateAdminQuickLabel(); input.focus(); }
@@ -636,13 +343,16 @@ if(passInput) {
     });
 }
 
-function login() {
-    if (document.getElementById('pass').value === 'MDRG') {
+async function login() {
+    const pass = document.getElementById('pass').value;
+    try {
+        const token = await workerLogin(pass);
+        setSessionToken(token);
         document.getElementById('loginOverlay').classList.add('hidden');
         document.getElementById('adminContent').classList.remove('hidden');
         renderManageList();
         showNotify("Access granted!");
-    } else {
+    } catch (e) {
         showNotify("Incorrect password!", "error");
     }
 }
@@ -651,8 +361,7 @@ function tryAutoLoginAdmin() {
     const loginOverlay = document.getElementById('loginOverlay');
     const adminContent = document.getElementById('adminContent');
     if (!loginOverlay || !adminContent) return;
-    if (sessionStorage.getItem('adminAutoLogin') === '1') {
-        sessionStorage.removeItem('adminAutoLogin');
+    if (getSessionToken()) {
         loginOverlay.classList.add('hidden');
         adminContent.classList.remove('hidden');
         renderManageList();
@@ -1044,7 +753,3 @@ document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () 
     closeDeleteModal();
     showNotify("Asset removed!");
 });
-
-tryReconnectAssetsFile();
-tryReconnectLibraryFile();
-
