@@ -19,5 +19,26 @@ var assetsCreados = [
         "tamanho": "1.58 MB",
         "status": "nenhum",
         "fail": "none"
+    },
+    {
+        "id": 1786857317724,
+        "nome": "Female Body R6 - Pleasant Ana",
+        "categoria": [
+            "BODY"
+        ],
+        "descricao": "Pleasant Ana - R6",
+        "descricaoLonga": "PLEASANT ANA - Includes: Torso, Legs, Arms and Torso.",
+        "imagens": [
+            "https://i.postimg.cc/XYzNYXcB/Female-Body-R6v2-Pleasant-Ana.png",
+            "https://i.postimg.cc/K8Hc84rM/Front.png",
+            "https://i.postimg.cc/3xRJh2pZ/Back.png",
+            "https://i.postimg.cc/t4MR47tV/Left.png",
+            "https://i.postimg.cc/fRrWRkjc/Right.png"
+        ],
+        "linkDownload": "https://www.mediafire.com/file/rrksjeffxb7m7ag/FemaleBodyV1_-_Pleasant_Ana.zip/file",
+        "formato": ".ZIP/.mesh",
+        "tamanho": "1.20 MB",
+        "status": "nenhum",
+        "fail": "none"
     }
 ];
