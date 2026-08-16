@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CoreAssets | Hub</title>
+    <link rel="icon" type="image/png" href="https://i.postimg.cc/pT5sM5Gk/cf-logo-Photoroom.png">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
+    <style>
+        .badge-novo { background: #10b981; }
+        .badge-limitado { background: #f59e0b; }
+        .badge-recomendado { background: #8b5cf6; }
+        .asset-card:hover .shortcut-btn { opacity: 1; transform: translateY(0); }
+
+        #assetGrid { transition: opacity .22s ease, transform .22s ease; }
+        #assetGrid.grid-fade-out { opacity: 0; transform: translateY(10px); }
+
+        #pageWrapper { transition: filter .35s ease, transform .35s ease; }
+        #pageWrapper.page-blurred { filter: blur(6px) brightness(0.6); transform: scale(0.985); pointer-events: none; }
+
+        #assetModalOverlay { transition: background-color .35s ease; }
+        #assetModalBackdrop { transition: opacity .35s ease; }
+        #assetModalContent { transition: opacity .35s cubic-bezier(.22,1,.36,1), transform .35s cubic-bezier(.22,1,.36,1); }
+
+        * {
+            scrollbar-width: thin;
+            scrollbar-color: #2563eb #11151f;
+        }
+        ::-webkit-scrollbar { width: 11px; height: 11px; }
+        ::-webkit-scrollbar-track { background: #0b0e14; }
+        ::-webkit-scrollbar-thumb {
+            background-color: #1e3a5f;
+            border-radius: 10px;
+            border: 2px solid #0b0e14;
+            transition: background-color .2s ease;
+        }
+        ::-webkit-scrollbar-thumb:hover { background-color: #3b82f6; }
+        ::-webkit-scrollbar-corner { background: #0b0e14; }
+
+        @keyframes downloadPulse {
+            0%, 100% { transform: translateY(0); opacity: 1; }
+            50% { transform: translateY(3px); opacity: 0.55; }
+        }
+        .download-icon-pulse { display: inline-block; animation: downloadPulse 0.9s ease-in-out infinite; }
+
+        @keyframes toastIn {
+            0% { opacity: 0; transform: translateX(40px) scale(0.9); }
+            60% { opacity: 1; transform: translateX(-4px) scale(1.02); }
+            100% { opacity: 1; transform: translateX(0) scale(1); }
+        }
+        @keyframes toastOut {
+            0% { opacity: 1; transform: translateX(0) scale(1); }
+            100% { opacity: 0; transform: translateX(30px) scale(0.95); }
+        }
+        .toast-in { animation: toastIn 0.4s cubic-bezier(.22,1,.36,1) forwards; }
+        .toast-out { animation: toastOut 0.3s ease forwards; }
+    </style>
+</head>
+<body class="bg-[#0b0e14] text-white min-h-screen">
+    <div id="notification-container" class="fixed top-5 right-5 z-[100] flex flex-col gap-3"></div>
+
+    <div id="pageWrapper">
+        <nav class="flex flex-wrap justify-between items-center gap-4 px-10 py-6 border-b border-white/5 sticky top-0 bg-[#0b0e14]/90 backdrop-blur-md z-40">
+            <div class="text-2xl font-black text-blue-500 cursor-pointer" onclick="location.href='index.html'">CORE<span class="text-white">ASSETS</span></div>
+
+            <div id="filter-container" class="flex flex-col items-center gap-2 order-3 md:order-none w-full md:w-auto">
+                <div id="main-filters" class="flex justify-center gap-2 flex-wrap"></div>
+                <div id="extra-filters" class="hidden gap-2 flex-wrap justify-center bg-slate-900/95 border border-white/5 rounded-2xl p-3 absolute mt-12"></div>
+            </div>
+
+            <div id="adminAccess" class="relative" onmouseenter="showAdminQuickLogin()" onmouseleave="maybeHideAdminQuickLogin()">
+                <button id="adminBtn" onclick="showAdminQuickLogin()" class="bg-blue-600 px-6 py-2 rounded-full font-bold hover:bg-blue-500 transition shadow-lg shadow-blue-900/20">Admin Panel</button>
+                <div id="adminLoginBox" class="hidden absolute inset-0">
+                    <div class="relative w-full h-full">
+                        <input type="password" id="adminQuickPass" class="w-full h-full bg-black/40 backdrop-blur-md text-left pl-5 rounded-full outline-none border border-blue-500/50 text-xs font-bold tracking-[4px] caret-transparent">
+                        <span id="adminQuickPassLabel" class="pointer-events-none absolute inset-0 flex items-center justify-center text-xs font-bold tracking-[4px] text-slate-400 transition-opacity duration-150">PASSWORD</span>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <main class="container mx-auto px-6 py-12">
+            <div id="assetGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                </div>
+        </main>
+
+        <footer class="border-t border-white/5 mt-12">
+            <div class="container mx-auto px-6 py-12 grid grid-cols-1 md:grid-cols-2 gap-10 text-sm">
+                <div>
+                    <h3 class="text-white font-bold uppercase text-xs tracking-widest mb-3">Créditos &amp; Términos de uso</h3>
+                    <p class="text-slate-500 leading-relaxed">
+                        Todos los assets publicados en este sitio pertenecen a sus respectivos creadores originales.
+                        Este sitio no reclama autoría ni propiedad sobre ningún archivo listado; funciona únicamente
+                        como un índice de referencia. Si eres el autor de un asset y quieres que se acredite tu nombre
+                        o que se retire de esta lista, contáctanos usando la información de al lado.
+                    </p>
+                </div>
+                <div>
+                    <h3 class="text-white font-bold uppercase text-xs tracking-widest mb-3">Solicitar retiro de un asset</h3>
+                    <p class="text-slate-500 leading-relaxed mb-4">
+                        ¿Eres el creador original de un asset publicado aquí y quieres que lo bajemos?
+                        Escríbenos y lo resolvemos directamente, sin necesidad de una notificación formal.
+                    </p>
+                    <a href="mailto:contact@coreassets.example?subject=Solicitud%20de%20retiro%20de%20asset&body=Nombre%20del%20asset%3A%0AEnlace%20del%20asset%20en%20el%20sitio%3A%0AEnlace%20a%20tu%20obra%20original%3A%0A"
+                       class="inline-flex items-center gap-2 bg-blue-600/10 hover:bg-blue-600 text-blue-400 hover:text-white border border-blue-500/20 px-5 py-3 rounded-xl font-bold text-xs uppercase transition">
+                        ✉️ contact@coreassets.example
+                    </a>
+                </div>
+            </div>
+            <p class="text-center text-slate-600 text-xs pb-8">© <span id="footerYear"></span> CoreAssets. Todos los assets pertenecen a sus respectivos autores.</p>
+        </footer>
+    </div>
+
+    <!-- Modal de detalles del asset: enfoca el contenido y desenfoca el fondo -->
+    <div id="assetModalOverlay" class="fixed inset-0 z-50 hidden">
+        <div id="assetModalBackdrop" class="absolute inset-0 bg-black/60 opacity-0" onclick="closeAssetDetail()"></div>
+        <div class="relative z-10 h-full overflow-y-auto flex justify-center px-4 py-10 md:py-16">
+            <button onclick="closeAssetDetail()" class="fixed top-6 right-6 md:top-8 md:right-8 z-20 bg-slate-900/80 hover:bg-blue-600 border border-white/10 w-11 h-11 rounded-full flex items-center justify-center text-xl transition">✕</button>
+            <div id="assetModalContent" class="w-full max-w-4xl opacity-0 translate-y-6 scale-[0.97]">
+                </div>
+        </div>
+    </div>
+
+    <script>var bibliotecaMeshes = []; var assetsCreados = [];</script>
+    <script>
+
+        document.write('<script src="Vyn-body.js?v=' + Date.now() + '"><\/script>');
+        document.write('<script src="Vyn-assets.js?v=' + Date.now() + '"><\/script>');
+    </script>
+    <script src="script.js"></script>
+    <script>
+        const footerYearEl = document.getElementById('footerYear');
+        if (footerYearEl) footerYearEl.innerText = new Date().getFullYear();
+    </script>
+</body>
+</html>
+
