@@ -22,11 +22,11 @@ var assetsCreados = [
     },
     {
         "id": 1786857317724,
-        "nome": "Female Body R6 - Pleasant Ana",
+        "nome": "Female Body- Pleasant Ana",
         "categoria": [
             "BODY"
         ],
-        "descricao": "Pleasant Ana - R6",
+        "descricao": "Pleasant Ana",
         "descricaoLonga": "PLEASANT ANA - Includes: Torso, Legs, Arms and Torso.",
         "imagens": [
             "https://i.postimg.cc/XYzNYXcB/Female-Body-R6v2-Pleasant-Ana.png",
@@ -36,7 +36,7 @@ var assetsCreados = [
             "https://i.postimg.cc/fRrWRkjc/Right.png"
         ],
         "linkDownload": "https://www.mediafire.com/file/rrksjeffxb7m7ag/FemaleBodyV1_-_Pleasant_Ana.zip/file",
-        "formato": ".ZIP/.mesh",
+        "formato": ".ZIP",
         "tamanho": "1.20 MB",
         "status": "nenhum",
         "fail": "none"
