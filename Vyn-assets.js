@@ -22,7 +22,7 @@ var assetsCreados = [
     },
     {
         "id": 1786857317724,
-        "nome": "Female Body- Pleasant Ana",
+        "nome": "Female Body - Pleasant Ana",
         "categoria": [
             "BODY"
         ],
