@@ -101,7 +101,7 @@ var assetsCreados = [
         "descricao": "With this file you can create animations",
         "descricaoLonga": "With this file you can create animations and more for your game\n",
         "imagens": [
-            "https://i.ytimg.com/vi/9pVPJ-C2l34/maxresdefault.jpg"
+            "https://i.postimg.cc/Tw6TJT7w/imagen.png"
         ],
         "linkDownload": "https://cdn.discordapp.com/attachments/1523158956153901277/1523158956527190118/moonyV4.rbxmx?ex=6a831f92&is=6a81ce12&hm=49e8c542ecf1e198fc5c390f04939b76f6f1c822ca0dabf9e4c518ca149e666d&",
         "formato": ".rbxm",
