@@ -94,11 +94,11 @@ var assetsCreados = [
     },
     {
         "id": 1786893003537,
-        "nome": "MoonAnimator 2",
+        "nome": "Moon Animator",
         "categoria": [
             "ANIMATIONS"
         ],
-        "descricao": "With this file you can create animations",
+        "descricao": "An keyframe animator free",
         "descricaoLonga": "With this file you can create animations and more for your game\n",
         "imagens": [
             "https://i.postimg.cc/HxFqDdDp/imagen.png"
