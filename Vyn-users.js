@@ -8,7 +8,7 @@ var adminUsers = [
     },
     {
         "id": 1786938734811,
-        "usuario": "kira",
+        "usuario": "Mod",
         "deviceId": "dev-mswotdn3-alhqyw0czzln06acqx50sb",
         "banned": false,
         "creado": "2026-08-17T03:52:14.811Z"
