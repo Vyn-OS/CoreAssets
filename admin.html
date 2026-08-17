@@ -56,6 +56,26 @@
         </div>
     </div>
 
+    <div id="usernameModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[70] hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-white/10 p-8 rounded-3xl max-w-sm w-full text-center">
+            <h3 class="text-xl font-bold mb-2">Elige tu usuario</h3>
+            <p class="text-slate-400 text-sm mb-6">Este dispositivo quedará vinculado a este nombre. No podrás cambiarlo después.</p>
+            <input type="text" id="newUsernameInput" placeholder="usuario" class="w-full bg-black/40 p-5 rounded-2xl mb-2 border border-white/5 outline-none focus:border-blue-500 text-center">
+            <p id="usernameError" class="text-red-500 text-xs mb-4 hidden">Ese nombre ya está en uso.</p>
+            <button onclick="submitNewUsername()" class="w-full bg-blue-600 py-5 rounded-2xl font-black hover:bg-blue-500 transition uppercase">Confirmar</button>
+        </div>
+    </div>
+
+    <div id="deleteUserModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-white/10 p-8 rounded-3xl max-w-sm w-full text-center">
+            <h3 class="text-xl font-bold mb-6">¿Eliminar acceso permanentemente?</h3>
+            <div class="flex gap-3">
+                <button onclick="closeDeleteUserModal()" class="flex-1 py-3 rounded-xl bg-slate-800 font-bold">Cancelar</button>
+                <button id="confirmDeleteUserBtn" class="flex-1 py-3 rounded-xl bg-red-600 font-bold">Eliminar</button>
+            </div>
+        </div>
+    </div>
+
     <div id="loginOverlay" class="fixed inset-0 bg-[#0b0e14] flex items-center justify-center z-50">
         <div class="bg-slate-900 p-10 rounded-3xl border border-white/5 w-[400px] text-center shadow-2xl">
             <h2 class="text-3xl font-black mb-6 italic text-blue-500 font-mono">ADMIN</h2>
@@ -76,6 +96,7 @@
             <div class="flex gap-2">
                 <button onclick="switchTab('create')" id="tabCreate" class="px-6 py-3 rounded-xl font-bold bg-blue-600 transition">New</button>
                 <button onclick="switchTab('manage')" id="tabManage" class="px-6 py-3 rounded-xl font-bold bg-slate-800 transition">List</button>
+                <button onclick="switchTab('users')" id="tabUsers" class="px-6 py-3 rounded-xl font-bold bg-slate-800 transition">Users</button>
                 <button onclick="forgetAdminPass()" class="px-6 py-3 rounded-xl font-bold bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white transition uppercase text-xs">Forget Password</button>
                 <button onclick="location.href='index.html'" class="px-6 py-3 rounded-xl font-bold bg-red-600/20 text-red-500 hover:bg-red-600 hover:text-white transition uppercase text-xs">Exit Panel</button>
             </div>
@@ -173,13 +194,18 @@
         <div id="sectionManage" class="hidden animate__animated animate__fadeIn">
             <div id="existingAssetsList" class="grid gap-3"></div>
         </div>
+
+        <div id="sectionUsers" class="hidden animate__animated animate__fadeIn">
+            <div id="usersList" class="grid gap-3"></div>
+        </div>
     </div>
 
-    <script>var bibliotecaMeshes = []; var assetsCreados = [];</script>
+    <script>var bibliotecaMeshes = []; var assetsCreados = []; var adminUsers = [];</script>
     <script>
 
         document.write('<script src="Vyn-body.js?v=' + Date.now() + '"><\/script>');
         document.write('<script src="Vyn-assets.js?v=' + Date.now() + '"><\/script>');
+        document.write('<script src="Vyn-users.js?v=' + Date.now() + '"><\/script>');
     </script>
     <script src="script.js"></script>
 </body>
