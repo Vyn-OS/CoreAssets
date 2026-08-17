@@ -86,7 +86,7 @@ var assetsCreados = [
         "imagens": [
             "https://i.postimg.cc/rwcLwVdw/imagen.png"
         ],
-        "linkDownload": "https://cdn.discordapp.com/attachments/1522575046768328724/1523152956663267399/GUI_PACK.rbxm?ex=6a8319fb&is=6a81c87b&hm=76bae27b6d2885a07faa8c89420eae6b26dfe80ecf0c077a1941f0772a1b39ad&",
+        "linkDownload": "https://drive.google.com/file/d/1ZzPF_INXJvfjcYLH1JIZQDrHGNUtRPWT/view?usp=drive_link",
         "formato": ".rbxm",
         "tamanho": "15.3 KB",
         "status": "nenhum",
