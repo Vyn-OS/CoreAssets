@@ -1,5 +1,23 @@
 const WORKER_URL = 'https://coreassets-admin.normal8607.workers.dev';
 
+const ADMIN_PASS_KEY = 'coreassets_admin_pass';
+
+function getSavedAdminPass() {
+    try { return localStorage.getItem(ADMIN_PASS_KEY) || ''; }
+    catch (e) { return ''; }
+}
+
+function saveAdminPass(pass) {
+    try { localStorage.setItem(ADMIN_PASS_KEY, pass); }
+    catch (e) {  }
+}
+
+function forgetAdminPass() {
+    try { localStorage.removeItem(ADMIN_PASS_KEY); }
+    catch (e) {  }
+    showNotify("Saved password forgotten.");
+}
+
 function getSessionToken() {
     return sessionStorage.getItem('admin_session');
 }
@@ -282,29 +300,35 @@ function showAdminQuickLogin() {
     const input = document.getElementById('adminQuickPass');
     if (!btn || !box || !input) return;
 
+    if (adminQuickLoginOpen) {
+        hideAdminQuickLogin();
+        return;
+    }
+
     btn.classList.add('blur-sm', 'opacity-30', 'pointer-events-none');
     box.classList.remove('hidden');
-
-    if (adminQuickLoginOpen) return;
     adminQuickLoginOpen = true;
 
-    input.value = '';
+    input.value = getSavedAdminPass();
     updateAdminQuickLabel();
     input.focus();
 
-    input.addEventListener('input', updateAdminQuickLabel);
+    input.addEventListener('input', () => {
+        updateAdminQuickLabel();
+        tryAutoSubmitQuickLogin();
+    });
     input.addEventListener('keypress', function onKey(e) {
         if (e.key === 'Enter') checkAdminQuickLogin(input.value);
     });
+
+    tryAutoSubmitQuickLogin();
 }
 
-function maybeHideAdminQuickLogin() {
-    const input = document.getElementById('adminQuickPass');
-    if (!input) return;
-    setTimeout(() => {
-        if (!input.value) hideAdminQuickLogin();
-    }, 150);
-}
+document.addEventListener('click', (e) => {
+    if (!adminQuickLoginOpen) return;
+    const adminAccess = document.getElementById('adminAccess');
+    if (adminAccess && !adminAccess.contains(e.target)) hideAdminQuickLogin();
+});
 
 function hideAdminQuickLogin() {
     const btn = document.getElementById('adminBtn');
@@ -328,6 +352,7 @@ async function checkAdminQuickLogin(value) {
     try {
         const token = await workerLogin(value);
         setSessionToken(token);
+        saveAdminPass(value);
         location.href = 'admin.html';
     } catch (e) {
         showNotify("Incorrect password!", "error");
@@ -336,11 +361,39 @@ async function checkAdminQuickLogin(value) {
     }
 }
 
+let quickLoginAutoSubmitting = false;
+function tryAutoSubmitQuickLogin() {
+    const input = document.getElementById('adminQuickPass');
+    const saved = getSavedAdminPass();
+    if (!input || quickLoginAutoSubmitting || !saved) return;
+    if (input.value.length === saved.length) {
+        quickLoginAutoSubmitting = true;
+        checkAdminQuickLogin(input.value).finally(() => {
+            quickLoginAutoSubmitting = false;
+        });
+    }
+}
+
 const passInput = document.getElementById('pass');
 if(passInput) {
+    passInput.value = getSavedAdminPass();
     passInput.addEventListener('keypress', (e) => {
         if(e.key === 'Enter') login();
     });
+
+    let passAutoSubmitting = false;
+    function tryAutoSubmitPass() {
+        const saved = getSavedAdminPass();
+        if (passAutoSubmitting || !saved) return;
+        if (passInput.value.length === saved.length) {
+            passAutoSubmitting = true;
+            login().finally(() => {
+                passAutoSubmitting = false;
+            });
+        }
+    }
+    passInput.addEventListener('input', tryAutoSubmitPass);
+    tryAutoSubmitPass();
 }
 
 async function login() {
@@ -348,6 +401,7 @@ async function login() {
     try {
         const token = await workerLogin(pass);
         setSessionToken(token);
+        saveAdminPass(pass);
         document.getElementById('loginOverlay').classList.add('hidden');
         document.getElementById('adminContent').classList.remove('hidden');
         renderManageList();
