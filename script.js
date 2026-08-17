@@ -156,6 +156,11 @@ function isProtectedUser(u) {
     return (u.usuario || '').trim().toLowerCase() === 'vyn';
 }
 
+function isCurrentUserVyn() {
+    const current = findUserByDeviceId(getDeviceId());
+    return !!current && isProtectedUser(current);
+}
+
 function generateUsersFileContent(usersArr) {
     return "var adminUsers = " + JSON.stringify(usersArr, null, 4) + ";\n";
 }
@@ -866,6 +871,7 @@ function renderUsersList() {
     const l = document.getElementById('usersList');
     if (!l) return;
     const users = getAdminUsersList();
+    const puedeEliminar = isCurrentUserVyn();
     l.innerHTML = users.length ? "" : "<p class='text-slate-500 text-center py-10'>No hay usuarios registrados.</p>";
     users.forEach(u => {
         const protegido = isProtectedUser(u);
@@ -879,7 +885,7 @@ function renderUsersList() {
                     ${protegido ? `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Protegido</span>` : estadoTag}
                 </div>
                 <div class="flex gap-2">
-                    ${protegido || u.banned ? '' : `<button onclick="openDeleteUserModal(${u.id})" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Eliminar</button>`}
+                    ${(!protegido && !u.banned && puedeEliminar) ? `<button onclick="openDeleteUserModal(${u.id})" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Eliminar</button>` : ''}
                 </div>
             </div>`;
     });
@@ -894,6 +900,7 @@ function closeDeleteUserModal() {
     document.getElementById('deleteUserModal')?.classList.add('hidden');
 }
 document.getElementById('confirmDeleteUserBtn')?.addEventListener('click', async () => {
+    if (!isCurrentUserVyn()) { closeDeleteUserModal(); return; }
     const u = getAdminUsersList().find(x => x.id == userToDelete);
     if (!u || isProtectedUser(u)) { closeDeleteUserModal(); return; }
 
