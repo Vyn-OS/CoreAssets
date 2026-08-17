@@ -98,7 +98,7 @@ var assetsCreados = [
         "categoria": [
             "ANIMATIONS"
         ],
-        "descricao": "An keyframe animator free",
+        "descricao": "A keyframe animator free",
         "descricaoLonga": "With this file you can create animations and more for your game\n",
         "imagens": [
             "https://i.postimg.cc/HxFqDdDp/imagen.png"
