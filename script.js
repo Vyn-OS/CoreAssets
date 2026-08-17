@@ -94,8 +94,6 @@ function toFileFormat(a) {
     };
 }
 
-let libraryAssets = (typeof bibliotecaMeshes !== 'undefined' ? bibliotecaMeshes : []).map(m => ({ ...fromFileFormat(m), isLibrary: true }));
-
 let assets = (typeof assetsCreados !== 'undefined' ? assetsCreados : []).map(fromFileFormat);
 let assetToDelete = null;
 let assetToDeleteSource = 'admin';
@@ -120,33 +118,6 @@ async function persistAssets() {
     try {
         await workerSave('/save-assets', content, 'Update assets from admin panel');
         setFileStatus(true, 'Publicado ✔️');
-        showNotify("Cambios publicados. La web se actualiza en ~1 min.");
-    } catch (e) {
-        console.error(e);
-        showNotify("Error al publicar: " + e.message, "error");
-    }
-}
-
-function setLibraryFileStatus(connected, label) {
-    const dot = document.getElementById('libraryFileStatusDot');
-    const text = document.getElementById('libraryFileStatusText');
-    if (!dot || !text) return;
-    dot.classList.remove('bg-slate-600', 'bg-red-500', 'bg-green-500');
-    dot.classList.add(connected ? 'bg-green-500' : 'bg-red-500');
-    text.innerText = label;
-}
-
-function generateLibraryFileContent(itemsArr) {
-    const data = itemsArr.map(toFileFormat).map(({ status, fail, ...rest }) => rest);
-    return "bibliotecaMeshes.push(\n" + JSON.stringify(data, null, 4).replace(/^\[/, '').replace(/\]$/, '') + "\n);\n";
-}
-
-async function persistLibraryAssets() {
-    const content = generateLibraryFileContent(libraryAssets);
-
-    try {
-        await workerSave('/save-library', content, 'Update library assets from admin panel');
-        setLibraryFileStatus(true, 'Publicado ✔️');
         showNotify("Cambios publicados. La web se actualiza en ~1 min.");
     } catch (e) {
         console.error(e);
@@ -194,7 +165,7 @@ async function persistUsers() {
     await workerSave('/save-users', content, 'Update admin users');
 }
 
-const allAssets = [...libraryAssets, ...assets];
+const allAssets = [...assets];
 
 const FAVORITES_KEY = 'coreassets_favorites';
 
@@ -575,8 +546,7 @@ async function saveAsset() {
     try {
         if (id) {
 
-            const list = source === 'library' ? libraryAssets : assets;
-            let a = list.find(x => x.id == id);
+            const a = assets.find(x => x.id == id);
             if (!a) return showNotify("Asset not found.", "error");
             a.title = title; a.desc = desc; a.descShort = descShort; a.fileUrl = fileUrl; a.status = status; a.fail = fail;
             a.fileFormat = fileFormat; a.fileSize = fileSize; a.categoria = categoria;
@@ -585,13 +555,8 @@ async function saveAsset() {
                 a.imagenes = imagenes;
                 a.img = imagenes[0];
             }
-            showNotify((source === 'library' ? "Library asset" : "Asset") + " updated!");
-
-            if (source === 'library') {
-                await persistLibraryAssets();
-            } else {
-                await persistAssets();
-            }
+            showNotify("Asset updated!");
+            await persistAssets();
         } else {
 
             if (!imagenes.length) return showNotify("Please enter at least one image URL!", "error");
@@ -857,15 +822,10 @@ function switchTab(t) {
 function renderManageList() {
     const l = document.getElementById('existingAssetsList');
     if(!l) return;
-    const combined = [
-        ...libraryAssets.map(a => ({ ...a, __source: 'library' })),
-        ...assets.map(a => ({ ...a, __source: 'admin' }))
-    ];
+    const combined = assets.map(a => ({ ...a, __source: 'admin' }));
     l.innerHTML = combined.length ? "" : "<p class='text-slate-500 text-center py-10'>Empty.</p>";
     combined.forEach(a => {
-        const tag = a.__source === 'library'
-            ? `<span class="bg-purple-600/20 text-purple-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Library</span>`
-            : `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Admin</span>`;
+        const tag = `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Admin</span>`;
         l.innerHTML += `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
                 <div class="flex items-center gap-4">
@@ -884,11 +844,10 @@ function renderManageList() {
 }
 
 function prepareEdit(id, source = 'admin') {
-    const list = source === 'library' ? libraryAssets : assets;
-    const a = list.find(x => x.id == id);
+    const a = assets.find(x => x.id == id);
     if (!a) return;
     document.getElementById('editId').value = a.id;
-    document.getElementById('editSource').value = source;
+    document.getElementById('editSource').value = 'admin';
     document.getElementById('assetTitle').value = a.title;
     document.getElementById('assetDesc').value = a.desc || "";
     document.getElementById('assetDescShort').value = a.descShort || "";
@@ -899,7 +858,7 @@ function prepareEdit(id, source = 'admin') {
     document.getElementById('assetStatus').value = a.status || 'nenhum';
     document.getElementById('assetFail').value = a.fail || 'none';
     setImageFields(a.imagenes && a.imagenes.length ? a.imagenes : (a.img ? [a.img] : []));
-    document.getElementById('panelTitle').innerText = "Editing (" + (source === 'library' ? 'Library' : 'Admin') + "): " + a.title;
+    document.getElementById('panelTitle').innerText = "Editing: " + a.title;
     switchTab('create');
 }
 
@@ -960,20 +919,14 @@ document.getElementById('confirmDeleteUserBtn')?.addEventListener('click', async
 
 function openDeleteModal(id, source = 'admin') {
     assetToDelete = id;
-    assetToDeleteSource = source;
     document.getElementById('deleteModal').classList.remove('hidden');
 }
 function closeDeleteModal() {
     document.getElementById('deleteModal').classList.add('hidden');
 }
 document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () => {
-    if (assetToDeleteSource === 'library') {
-        libraryAssets = libraryAssets.filter(x => x.id != assetToDelete);
-        await persistLibraryAssets();
-    } else {
-        assets = assets.filter(x => x.id != assetToDelete);
-        await persistAssets();
-    }
+    assets = assets.filter(x => x.id != assetToDelete);
+    await persistAssets();
     renderManageList();
     closeDeleteModal();
     showNotify("Asset removed!");
