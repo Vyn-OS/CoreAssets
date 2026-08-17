@@ -84,7 +84,7 @@ var assetsCreados = [
         "descricao": "A gui resource package",
         "descricaoLonga": "A graphical user interface resource pack that you can use to create your game\n",
         "imagens": [
-            "https://i.postimg.cc/6QGdGfg9/imagen.png"
+            "https://i.postimg.cc/rwcLwVdw/imagen.png"
         ],
         "linkDownload": "https://cdn.discordapp.com/attachments/1522575046768328724/1523152956663267399/GUI_PACK.rbxm?ex=6a8319fb&is=6a81c87b&hm=76bae27b6d2885a07faa8c89420eae6b26dfe80ecf0c077a1941f0772a1b39ad&",
         "formato": ".rbxm",
