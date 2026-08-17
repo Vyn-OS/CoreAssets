@@ -188,7 +188,7 @@ function toggleFavorite(id) {
     const idx = favs.indexOf(String(id));
     if (idx === -1) {
         favs.push(String(id));
-        showNotify("Added to favorites ❤️");
+        showNotify("Added to favorites");
     } else {
         favs.splice(idx, 1);
         showNotify("Removed from favorites");
@@ -293,13 +293,13 @@ function showNotify(text, type = 'success') {
     if(!container) return;
     const toast = document.createElement('div');
     const styles = {
-        success: { color: 'bg-green-600', icon: '✅' },
-        error: { color: 'bg-red-600', icon: '❌' },
-        download: { color: 'bg-blue-600', icon: '<span class="download-icon-pulse">⬇️</span>' }
+        success: { color: 'bg-green-600' },
+        error: { color: 'bg-red-600' },
+        download: { color: 'bg-blue-600' }
     };
     const s = styles[type] || styles.success;
     toast.className = `${s.color} text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 toast-in mb-2 font-bold z-50`;
-    toast.innerHTML = `<span>${s.icon}</span><span>${text}</span>`;
+    toast.innerHTML = `<span>${text}</span>`;
     container.appendChild(toast);
     setTimeout(() => {
         toast.classList.remove('toast-in');
@@ -453,7 +453,11 @@ async function handlePostLoginUserCheck() {
     showUsernamePrompt();
 }
 
+let adminAccessGranted = false;
+
 function enterAdminPanel() {
+    if (adminAccessGranted) return;
+    adminAccessGranted = true;
     document.getElementById('loginOverlay').classList.add('hidden');
     document.getElementById('usernameModal')?.classList.add('hidden');
     document.getElementById('adminContent').classList.remove('hidden');
