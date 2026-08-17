@@ -1,6 +1,6 @@
 # CoreAssets
 
-Índice web de assets 3D relacionados con Roblox (mallas, animaciones, GUIs y más), con un panel de administración privado para publicar y gestionar el contenido.
+Índice web de assets 3D para desarrollo de juegos (mallas, animaciones, GUIs y más), con un panel de administración privado para publicar y gestionar el contenido.
 
 ## ¿Qué es esto?
 
@@ -14,7 +14,7 @@ CoreAssets es una galería pública donde se listan assets descargables organiza
   - Editor para crear, editar y eliminar assets.
   - Publicación directa al repositorio vía GitHub API (los cambios se ven reflejados en el sitio en ~1 minuto).
   - Sistema de usuarios registrados por dispositivo: el primer acceso pide elegir un nombre de usuario único, vinculado a ese navegador.
-  - Gestión de acceso: solo el usuario `vyn` puede revocar el acceso de otros usuarios registrados.
+  - Gestión de acceso: solo el usuario `Vyn` puede revocar el acceso de otros usuarios registrados.
 
 ## Tecnologías
 
@@ -41,4 +41,4 @@ Si eres el autor de un asset publicado aquí y quieres que se te acredite o que 
 
 ## Aviso
 
-Este es un proyecto personal, sin afiliación oficial con Roblox Corporation.
+Los assets listados en este sitio están pensados para usarse en juegos compatibles con la plataforma Roblox. Este proyecto es independiente y no tiene afiliación, patrocinio ni respaldo de Roblox Corporation. El nombre se menciona únicamente con fines descriptivos.****
