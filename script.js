@@ -882,7 +882,7 @@ function renderUsersList() {
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
                 <div class="flex items-center gap-3">
                     <span class="font-bold text-sm">${u.usuario}</span>
-                    ${protegido ? `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Protegido</span>` : estadoTag}
+                    ${protegido ? `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Creador</span>` : estadoTag}
                 </div>
                 <div class="flex gap-2">
                     ${(!protegido && !u.banned && puedeEliminar) ? `<button onclick="openDeleteUserModal(${u.id})" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Eliminar</button>` : ''}
