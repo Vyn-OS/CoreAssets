@@ -154,6 +154,46 @@ async function persistLibraryAssets() {
     }
 }
 
+const DEVICE_ID_KEY = 'coreassets_device_id';
+
+function getDeviceId() {
+    try {
+        let id = localStorage.getItem(DEVICE_ID_KEY);
+        if (!id) {
+            id = 'dev-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+            localStorage.setItem(DEVICE_ID_KEY, id);
+        }
+        return id;
+    } catch (e) { return 'dev-unknown'; }
+}
+
+function getAdminUsersList() {
+    return (typeof adminUsers !== 'undefined' && Array.isArray(adminUsers)) ? adminUsers : [];
+}
+
+function findUserByDeviceId(deviceId) {
+    return getAdminUsersList().find(u => u.deviceId === deviceId);
+}
+
+function usernameTaken(name) {
+    const n = (name || '').trim().toLowerCase();
+    if (!n) return true;
+    return getAdminUsersList().some(u => (u.usuario || '').trim().toLowerCase() === n);
+}
+
+function isProtectedUser(u) {
+    return (u.usuario || '').trim().toLowerCase() === 'vyn';
+}
+
+function generateUsersFileContent(usersArr) {
+    return "var adminUsers = " + JSON.stringify(usersArr, null, 4) + ";\n";
+}
+
+async function persistUsers() {
+    const content = generateUsersFileContent(adminUsers);
+    await workerSave('/save-users', content, 'Update admin users');
+}
+
 const allAssets = [...libraryAssets, ...assets];
 
 const FAVORITES_KEY = 'coreassets_favorites';
@@ -402,10 +442,7 @@ async function login() {
         const token = await workerLogin(pass);
         setSessionToken(token);
         saveAdminPass(pass);
-        document.getElementById('loginOverlay').classList.add('hidden');
-        document.getElementById('adminContent').classList.remove('hidden');
-        renderManageList();
-        showNotify("Access granted!");
+        await handlePostLoginUserCheck();
     } catch (e) {
         showNotify("Incorrect password!", "error");
     }
@@ -416,13 +453,82 @@ function tryAutoLoginAdmin() {
     const adminContent = document.getElementById('adminContent');
     if (!loginOverlay || !adminContent) return;
     if (getSessionToken()) {
-        loginOverlay.classList.add('hidden');
-        adminContent.classList.remove('hidden');
-        renderManageList();
-        showNotify("Access granted!");
+        handlePostLoginUserCheck();
     }
 }
 tryAutoLoginAdmin();
+
+async function handlePostLoginUserCheck() {
+    const deviceId = getDeviceId();
+    const existing = findUserByDeviceId(deviceId);
+
+    if (existing) {
+        if (existing.banned) {
+            clearSessionToken();
+            document.getElementById('loginOverlay')?.classList.remove('hidden');
+            document.getElementById('adminContent')?.classList.add('hidden');
+            showNotify("Acceso denegado: este dispositivo fue baneado.", "error");
+            return;
+        }
+        enterAdminPanel();
+        return;
+    }
+
+    showUsernamePrompt();
+}
+
+function enterAdminPanel() {
+    document.getElementById('loginOverlay').classList.add('hidden');
+    document.getElementById('usernameModal')?.classList.add('hidden');
+    document.getElementById('adminContent').classList.remove('hidden');
+    renderManageList();
+    showNotify("Access granted!");
+}
+
+function showUsernamePrompt() {
+    document.getElementById('loginOverlay')?.classList.add('hidden');
+    const modal = document.getElementById('usernameModal');
+    const input = document.getElementById('newUsernameInput');
+    const errorEl = document.getElementById('usernameError');
+    if (!modal || !input) return;
+    input.value = '';
+    errorEl?.classList.add('hidden');
+    modal.classList.remove('hidden');
+    input.focus();
+    input.onkeypress = (e) => { if (e.key === 'Enter') submitNewUsername(); };
+}
+
+async function submitNewUsername() {
+    const input = document.getElementById('newUsernameInput');
+    const errorEl = document.getElementById('usernameError');
+    const name = (input?.value || '').trim();
+    if (!name) return;
+
+    if (usernameTaken(name)) {
+        errorEl?.classList.remove('hidden');
+        return;
+    }
+    errorEl?.classList.add('hidden');
+
+    const newUser = {
+        id: Date.now(),
+        usuario: name,
+        deviceId: getDeviceId(),
+        banned: false,
+        creado: new Date().toISOString()
+    };
+    adminUsers.push(newUser);
+
+    try {
+        await persistUsers();
+    } catch (e) {
+        adminUsers.pop();
+        showNotify("No se pudo registrar el usuario: " + e.message, "error");
+        return;
+    }
+
+    enterAdminPanel();
+}
 
 function addImageField(value = '') {
     const list = document.getElementById('assetImgList');
@@ -735,7 +841,17 @@ function handleDownload(id) {
 function switchTab(t) {
     document.getElementById('sectionForm').classList.toggle('hidden', t !== 'create');
     document.getElementById('sectionManage').classList.toggle('hidden', t !== 'manage');
-    if(t === 'manage') renderManageList();
+    document.getElementById('sectionUsers')?.classList.toggle('hidden', t !== 'users');
+
+    [['tabCreate', 'create'], ['tabManage', 'manage'], ['tabUsers', 'users']].forEach(([elId, tabId]) => {
+        const btn = document.getElementById(elId);
+        if (!btn) return;
+        btn.classList.toggle('bg-blue-600', t === tabId);
+        btn.classList.toggle('bg-slate-800', t !== tabId);
+    });
+
+    if (t === 'manage') renderManageList();
+    if (t === 'users') renderUsersList();
 }
 
 function renderManageList() {
@@ -786,6 +902,61 @@ function prepareEdit(id, source = 'admin') {
     document.getElementById('panelTitle').innerText = "Editing (" + (source === 'library' ? 'Library' : 'Admin') + "): " + a.title;
     switchTab('create');
 }
+
+function renderUsersList() {
+    const l = document.getElementById('usersList');
+    if (!l) return;
+    const users = getAdminUsersList();
+    l.innerHTML = users.length ? "" : "<p class='text-slate-500 text-center py-10'>No hay usuarios registrados.</p>";
+    users.forEach(u => {
+        const protegido = isProtectedUser(u);
+        const estadoTag = u.banned
+            ? `<span class="bg-red-600/20 text-red-500 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Baneado</span>`
+            : `<span class="bg-green-600/20 text-green-500 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Activo</span>`;
+        l.innerHTML += `
+            <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
+                <div class="flex items-center gap-3">
+                    <span class="font-bold text-sm">${u.usuario}</span>
+                    ${protegido ? `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Protegido</span>` : estadoTag}
+                </div>
+                <div class="flex gap-2">
+                    ${protegido || u.banned ? '' : `<button onclick="openDeleteUserModal(${u.id})" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Eliminar</button>`}
+                </div>
+            </div>`;
+    });
+}
+
+let userToDelete = null;
+function openDeleteUserModal(id) {
+    userToDelete = id;
+    document.getElementById('deleteUserModal')?.classList.remove('hidden');
+}
+function closeDeleteUserModal() {
+    document.getElementById('deleteUserModal')?.classList.add('hidden');
+}
+document.getElementById('confirmDeleteUserBtn')?.addEventListener('click', async () => {
+    const u = getAdminUsersList().find(x => x.id == userToDelete);
+    if (!u || isProtectedUser(u)) { closeDeleteUserModal(); return; }
+
+    u.banned = true;
+    try {
+        await persistUsers();
+    } catch (e) {
+        u.banned = false;
+        showNotify("No se pudo eliminar: " + e.message, "error");
+        closeDeleteUserModal();
+        return;
+    }
+
+    closeDeleteUserModal();
+    renderUsersList();
+    showNotify("Usuario eliminado permanentemente.");
+
+    if (u.deviceId === getDeviceId()) {
+        clearSessionToken();
+        location.href = 'index.html';
+    }
+});
 
 function openDeleteModal(id, source = 'admin') {
     assetToDelete = id;
