@@ -18,7 +18,8 @@ var assetsCreados = [
         "formato": ".ZIP/.mesh",
         "tamanho": "1.58 MB",
         "status": "nenhum",
-        "fail": "none"
+        "fail": "none",
+        "autor": "Vyn"
     },
     {
         "id": 1786857317724,
@@ -39,7 +40,8 @@ var assetsCreados = [
         "formato": ".ZIP",
         "tamanho": "1.20 MB",
         "status": "nenhum",
-        "fail": "none"
+        "fail": "none",
+        "autor": "Vyn"
     },
     {
         "id": 1786857654907,
@@ -56,7 +58,8 @@ var assetsCreados = [
         "formato": ".rbxm",
         "tamanho": "8.09 KB",
         "status": "nenhum",
-        "fail": "none"
+        "fail": "none",
+        "autor": "Vyn"
     },
     {
         "id": 1786857690794,
@@ -73,7 +76,8 @@ var assetsCreados = [
         "formato": ".rbxm",
         "tamanho": "13.66 KB",
         "status": "nenhum",
-        "fail": "none"
+        "fail": "none",
+        "autor": "Vyn"
     },
     {
         "id": 1786892732123,
@@ -90,7 +94,8 @@ var assetsCreados = [
         "formato": ".rbxm",
         "tamanho": "15.3 KB",
         "status": "nenhum",
-        "fail": "none"
+        "fail": "none",
+        "autor": "Vyn"
     },
     {
         "id": 1786893003537,
@@ -98,7 +103,7 @@ var assetsCreados = [
         "categoria": [
             "ANIMATIONS"
         ],
-        "descricao": "A keyframe animator free",
+        "descricao": "An keyframe animator free",
         "descricaoLonga": "With this file you can create animations and more for your game\n",
         "imagens": [
             "https://i.postimg.cc/HxFqDdDp/imagen.png"
@@ -107,6 +112,7 @@ var assetsCreados = [
         "formato": ".rbxm",
         "tamanho": "10.00 MB",
         "status": "nenhum",
-        "fail": "none"
+        "fail": "none",
+        "autor": "Vyn"
     }
 ];
