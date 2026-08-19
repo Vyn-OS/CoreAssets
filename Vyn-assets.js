@@ -37,7 +37,7 @@ var assetsCreados = [
             "https://i.postimg.cc/fRrWRkjc/Right.png"
         ],
         "linkDownload": "https://www.mediafire.com/file/rrksjeffxb7m7ag/FemaleBodyV1_-_Pleasant_Ana.zip/file",
-        "formato": ".ZIP",
+        "formato": ".ZIP/.mesh",
         "tamanho": "1.20 MB",
         "status": "nenhum",
         "fail": "none",
