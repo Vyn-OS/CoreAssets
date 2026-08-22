@@ -128,6 +128,27 @@ async function persistAssets() {
     }
 }
 
+// pendingQueue keeps the raw server records ({ id, asset, submittedBy, submittedAt })
+// so we always know who submitted each item — needed to block self-approval.
+let pendingQueue = [];
+
+async function workerCall(endpoint, body) {
+    const token = getSessionToken();
+    if (!token) throw new Error('Sesión no iniciada');
+    const res = await fetch(`${WORKER_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(body || {})
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+        clearSessionToken();
+        throw new Error('Sesión expirada, vuelve a iniciar sesión.');
+    }
+    if (!res.ok) throw new Error(data.error || `Error del servidor (${res.status})`);
+    return data;
+}
+
 async function refreshPendingFromServer() {
     const token = getSessionToken();
     if (!token) return;
@@ -137,28 +158,23 @@ async function refreshPendingFromServer() {
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok && Array.isArray(data.items)) {
-            pendingAssets = data.items.map(fromFileFormat);
+            pendingQueue = data.items;
+            pendingAssets = data.items.map(x => fromFileFormat(x.asset));
         }
     } catch (e) {
         console.error('No se pudo cargar la cola de revisión', e);
     }
 }
 
-async function persistPending() {
-    const token = getSessionToken();
-    if (!token) throw new Error('Sesión no iniciada');
-    const res = await fetch(`${WORKER_URL}/pending-save`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ items: pendingAssets.map(toFileFormat) })
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.status === 401) {
-        clearSessionToken();
-        throw new Error('Sesión expirada, vuelve a iniciar sesión.');
-    }
-    if (!res.ok) throw new Error(data.error || `Error del servidor (${res.status})`);
-    return data;
+// Sends one new asset to the review queue. The server records our deviceId
+// as the submitter so it can block us from approving it later.
+async function submitPending(assetInFileFormat) {
+    return workerCall('/pending-submit', { asset: assetInFileFormat, deviceId: getDeviceId() });
+}
+
+// Edits an asset that is still sitting in the pending queue (not yet published).
+async function updatePendingAsset(id, assetInFileFormat) {
+    return workerCall('/pending-update', { id, asset: assetInFileFormat, deviceId: getDeviceId() });
 }
 
 const DEVICE_ID_KEY = 'coreassets_device_id';
@@ -598,19 +614,27 @@ async function saveAsset() {
     try {
         if (id) {
 
-            const targetArr = source === 'pending' ? pendingAssets : assets;
-            const a = targetArr.find(x => x.id == id);
-            if (!a) return showNotify("Asset not found.", "error");
-            a.title = title; a.desc = desc; a.descShort = descShort; a.fileUrl = fileUrl; a.status = status; a.fail = fail;
-            a.fileFormat = fileFormat; a.fileSize = fileSize; a.categoria = categoria;
+            if (source === 'pending') {
+                const a = pendingAssets.find(x => x.id == id);
+                if (!a) return showNotify("Asset not found.", "error");
+                a.title = title; a.desc = desc; a.descShort = descShort; a.fileUrl = fileUrl; a.status = status; a.fail = fail;
+                a.fileFormat = fileFormat; a.fileSize = fileSize; a.categoria = categoria;
+                if (imagenes.length) { a.imagenes = imagenes; a.img = imagenes[0]; }
 
-            if (imagenes.length) {
-                a.imagenes = imagenes;
-                a.img = imagenes[0];
+                await updatePendingAsset(id, toFileFormat(a));
+                showNotify("Cambios guardados en revisión.");
+                switchTab('pending');
+            } else {
+                const a = assets.find(x => x.id == id);
+                if (!a) return showNotify("Asset not found.", "error");
+                a.title = title; a.desc = desc; a.descShort = descShort; a.fileUrl = fileUrl; a.status = status; a.fail = fail;
+                a.fileFormat = fileFormat; a.fileSize = fileSize; a.categoria = categoria;
+                if (imagenes.length) { a.imagenes = imagenes; a.img = imagenes[0]; }
+
+                showNotify("Asset updated!");
+                await persistAssets();
+                switchTab('manage');
             }
-            showNotify("Asset updated!");
-            await (source === 'pending' ? persistPending() : persistAssets());
-            switchTab(source === 'pending' ? 'pending' : 'manage');
         } else {
 
             if (!imagenes.length) return showNotify("Please enter at least one image URL!", "error");
@@ -622,10 +646,9 @@ async function saveAsset() {
                 await persistAssets();
                 switchTab('manage');
             } else {
-                await refreshPendingFromServer();
-                pendingAssets.push(nuevo);
+                await submitPending(toFileFormat(nuevo));
                 showNotify("Enviado a revisión. Se publicará cuando sea aprobado.");
-                await persistPending();
+                await refreshPendingFromServer();
                 switchTab('pending');
             }
         }
@@ -633,7 +656,7 @@ async function saveAsset() {
         resetForm();
     } catch (e) {
         console.error(e);
-        showNotify("Error saving the asset.", "error");
+        showNotify("Error saving the asset: " + e.message, "error");
     }
 }
 
@@ -912,8 +935,13 @@ function renderPendingList() {
     const l = document.getElementById('pendingList');
     if (!l) return;
     l.innerHTML = pendingAssets.length ? "" : "<p class='text-slate-500 text-center py-10'>No hay assets pendientes de revisión.</p>";
+    const myDeviceId = getDeviceId();
+
     pendingAssets.forEach(a => {
+        const record = pendingQueue.find(x => x.id == a.id);
+        const isOwn = record && record.submittedBy === myDeviceId;
         const tag = `<span class="bg-yellow-600/20 text-yellow-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">${a.autor || 'Admin'}</span>`;
+
         l.innerHTML += `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
                 <div class="flex items-center gap-4">
@@ -921,34 +949,32 @@ function renderPendingList() {
                     <div class="flex items-center gap-2">
                         <span class="font-bold text-sm">${a.title}</span>
                         ${tag}
+                        ${isOwn ? '<span class="bg-slate-700 text-slate-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Tuyo</span>' : ''}
                     </div>
                 </div>
                 <div class="flex gap-2">
                     <button onclick="prepareEdit('${a.id}', 'pending')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>
-                    <button onclick="approvePending('${a.id}')" class="bg-green-600/10 text-green-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Aprobar</button>
-                    <button onclick="openDeleteModal('${a.id}', 'pending')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Rechazar</button>
+                    <button onclick="approvePending('${a.id}')" ${isOwn ? 'disabled title="No puedes aprobar tu propia publicación"' : ''}
+                        class="px-4 py-2 rounded-xl text-xs font-bold uppercase ${isOwn ? 'bg-slate-800 text-slate-600 cursor-not-allowed' : 'bg-green-600/10 text-green-500'}">Aprobar</button>
+                    <button onclick="openDeleteModal('${a.id}', 'pending')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">${isOwn ? 'Retirar' : 'Rechazar'}</button>
                 </div>
             </div>`;
     });
 }
 
+// The Worker independently verifies (against Vyn-users.js) that this device
+// belongs to Vyn, and rejects the call if this device is the submitter —
+// the client-side "isCurrentUserVyn()" gate below is just UX, not the real lock.
 async function approvePending(id) {
-    if (!isCurrentUserVyn()) return;
-    const idx = pendingAssets.findIndex(x => x.id == id);
-    if (idx === -1) return;
-    const [aprobado] = pendingAssets.splice(idx, 1);
-    assets.push(aprobado);
-
     try {
-        await persistAssets();
-        await persistPending();
+        await workerCall('/pending-approve', { id, deviceId: getDeviceId() });
         showNotify("Asset aprobado y publicado!");
+        await refreshPendingFromServer();
+        renderPendingList();
+        await refreshAssetsFromKV();
     } catch (e) {
-        pendingAssets.splice(idx, 0, aprobado);
-        assets.pop();
         showNotify("No se pudo aprobar: " + e.message, "error");
     }
-    renderPendingList();
 }
 
 function updatePendingTabVisibility() {
@@ -1045,11 +1071,16 @@ function closeDeleteModal() {
 }
 document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () => {
     if (assetToDeleteSource === 'pending') {
-        pendingAssets = pendingAssets.filter(x => x.id != assetToDelete);
-        await persistPending();
-        renderPendingList();
-        closeDeleteModal();
-        showNotify("Asset rechazado.");
+        try {
+            await workerCall('/pending-reject', { id: assetToDelete, deviceId: getDeviceId() });
+            await refreshPendingFromServer();
+            renderPendingList();
+            closeDeleteModal();
+            showNotify("Asset rechazado.");
+        } catch (e) {
+            closeDeleteModal();
+            showNotify("No se pudo rechazar: " + e.message, "error");
+        }
     } else {
         assets = assets.filter(x => x.id != assetToDelete);
         await persistAssets();
@@ -1058,3 +1089,25 @@ document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () 
         showNotify("Asset removed!");
     }
 });
+
+// Fast public read: pulls the KV-backed asset cache (kept in sync by
+// /save-assets and /pending-approve on the Worker) so publishes appear
+// almost immediately instead of waiting on the GitHub Pages rebuild.
+async function refreshAssetsFromKV() {
+    try {
+        const res = await fetch(`${WORKER_URL}/assets`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!Array.isArray(data.items)) return;
+
+        assets = data.items.map(fromFileFormat);
+        allAssets.length = 0;
+        allAssets.push(...assets);
+
+        if (document.getElementById('assetGrid')) { renderFilters(); renderAssetGrid(); }
+        if (document.getElementById('existingAssetsList') && !document.getElementById('sectionManage')?.classList.contains('hidden')) renderManageList();
+    } catch (e) {  }
+}
+if (document.getElementById('assetGrid') || document.getElementById('adminContent')) {
+    refreshAssetsFromKV();
+}
