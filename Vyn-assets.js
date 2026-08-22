@@ -114,23 +114,5 @@ var assetsCreados = [
         "status": "nenhum",
         "fail": "none",
         "autor": "Vyn"
-    },
-    {
-        "id": 1787372338206,
-        "nome": "Test",
-        "categoria": [
-            "Test"
-        ],
-        "descricao": "Test",
-        "descricaoLonga": "Test",
-        "imagens": [
-            "Test"
-        ],
-        "linkDownload": "Test",
-        "formato": "Test",
-        "tamanho": "Test",
-        "status": "nenhum",
-        "fail": "none",
-        "autor": "Mod"
     }
 ];
