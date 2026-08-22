@@ -97,6 +97,7 @@ function toFileFormat(a) {
 }
 
 let assets = (typeof assetsCreados !== 'undefined' ? assetsCreados : []).map(fromFileFormat);
+let pendingAssets = [];
 let assetToDelete = null;
 let assetToDeleteSource = 'admin';
 
@@ -125,6 +126,39 @@ async function persistAssets() {
         console.error(e);
         showNotify("Error al publicar: " + e.message, "error");
     }
+}
+
+async function refreshPendingFromServer() {
+    const token = getSessionToken();
+    if (!token) return;
+    try {
+        const res = await fetch(`${WORKER_URL}/pending-list`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && Array.isArray(data.items)) {
+            pendingAssets = data.items.map(fromFileFormat);
+        }
+    } catch (e) {
+        console.error('No se pudo cargar la cola de revisión', e);
+    }
+}
+
+async function persistPending() {
+    const token = getSessionToken();
+    if (!token) throw new Error('Sesión no iniciada');
+    const res = await fetch(`${WORKER_URL}/pending-save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ items: pendingAssets.map(toFileFormat) })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+        clearSessionToken();
+        throw new Error('Sesión expirada, vuelve a iniciar sesión.');
+    }
+    if (!res.ok) throw new Error(data.error || `Error del servidor (${res.status})`);
+    return data;
 }
 
 const DEVICE_ID_KEY = 'coreassets_device_id';
@@ -462,12 +496,14 @@ async function handlePostLoginUserCheck() {
 
 let adminAccessGranted = false;
 
-function enterAdminPanel() {
+async function enterAdminPanel() {
     if (adminAccessGranted) return;
     adminAccessGranted = true;
     document.getElementById('loginOverlay').classList.add('hidden');
     document.getElementById('usernameModal')?.classList.add('hidden');
     document.getElementById('adminContent').classList.remove('hidden');
+    updatePendingTabVisibility();
+    await refreshPendingFromServer();
     renderManageList();
     showNotify("Access granted!");
 }
@@ -562,7 +598,8 @@ async function saveAsset() {
     try {
         if (id) {
 
-            const a = assets.find(x => x.id == id);
+            const targetArr = source === 'pending' ? pendingAssets : assets;
+            const a = targetArr.find(x => x.id == id);
             if (!a) return showNotify("Asset not found.", "error");
             a.title = title; a.desc = desc; a.descShort = descShort; a.fileUrl = fileUrl; a.status = status; a.fail = fail;
             a.fileFormat = fileFormat; a.fileSize = fileSize; a.categoria = categoria;
@@ -572,18 +609,28 @@ async function saveAsset() {
                 a.img = imagenes[0];
             }
             showNotify("Asset updated!");
-            await persistAssets();
+            await (source === 'pending' ? persistPending() : persistAssets());
+            switchTab(source === 'pending' ? 'pending' : 'manage');
         } else {
 
             if (!imagenes.length) return showNotify("Please enter at least one image URL!", "error");
-            assets.push({ id: Date.now(), title, desc, descShort, fileUrl, status, fail, fileFormat, fileSize, categoria, imagenes, img: imagenes[0], autor: getCurrentUsername() });
-            showNotify("Asset created!");
-            await persistAssets();
+            const nuevo = { id: Date.now(), title, desc, descShort, fileUrl, status, fail, fileFormat, fileSize, categoria, imagenes, img: imagenes[0], autor: getCurrentUsername() };
+
+            if (isCurrentUserVyn()) {
+                assets.push(nuevo);
+                showNotify("Asset created!");
+                await persistAssets();
+                switchTab('manage');
+            } else {
+                await refreshPendingFromServer();
+                pendingAssets.push(nuevo);
+                showNotify("Enviado a revisión. Se publicará cuando sea aprobado.");
+                await persistPending();
+                switchTab('pending');
+            }
         }
 
         resetForm();
-        renderManageList();
-        switchTab('manage');
     } catch (e) {
         console.error(e);
         showNotify("Error saving the asset.", "error");
@@ -823,8 +870,9 @@ function switchTab(t) {
     document.getElementById('sectionForm').classList.toggle('hidden', t !== 'create');
     document.getElementById('sectionManage').classList.toggle('hidden', t !== 'manage');
     document.getElementById('sectionUsers')?.classList.toggle('hidden', t !== 'users');
+    document.getElementById('sectionPending')?.classList.toggle('hidden', t !== 'pending');
 
-    [['tabCreate', 'create'], ['tabManage', 'manage'], ['tabUsers', 'users']].forEach(([elId, tabId]) => {
+    [['tabCreate', 'create'], ['tabManage', 'manage'], ['tabUsers', 'users'], ['tabPending', 'pending']].forEach(([elId, tabId]) => {
         const btn = document.getElementById(elId);
         if (!btn) return;
         btn.classList.toggle('bg-blue-600', t === tabId);
@@ -833,6 +881,7 @@ function switchTab(t) {
 
     if (t === 'manage') renderManageList();
     if (t === 'users') renderUsersList();
+    if (t === 'pending') { renderPendingList(); refreshPendingFromServer().then(renderPendingList); }
 }
 
 function renderManageList() {
@@ -859,11 +908,60 @@ function renderManageList() {
     });
 }
 
+function renderPendingList() {
+    const l = document.getElementById('pendingList');
+    if (!l) return;
+    l.innerHTML = pendingAssets.length ? "" : "<p class='text-slate-500 text-center py-10'>No hay assets pendientes de revisión.</p>";
+    pendingAssets.forEach(a => {
+        const tag = `<span class="bg-yellow-600/20 text-yellow-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">${a.autor || 'Admin'}</span>`;
+        l.innerHTML += `
+            <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
+                <div class="flex items-center gap-4">
+                    <img src="${a.img}" class="w-12 h-12 rounded-lg object-cover border border-white/10">
+                    <div class="flex items-center gap-2">
+                        <span class="font-bold text-sm">${a.title}</span>
+                        ${tag}
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="prepareEdit('${a.id}', 'pending')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>
+                    <button onclick="approvePending('${a.id}')" class="bg-green-600/10 text-green-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Aprobar</button>
+                    <button onclick="openDeleteModal('${a.id}', 'pending')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Rechazar</button>
+                </div>
+            </div>`;
+    });
+}
+
+async function approvePending(id) {
+    if (!isCurrentUserVyn()) return;
+    const idx = pendingAssets.findIndex(x => x.id == id);
+    if (idx === -1) return;
+    const [aprobado] = pendingAssets.splice(idx, 1);
+    assets.push(aprobado);
+
+    try {
+        await persistAssets();
+        await persistPending();
+        showNotify("Asset aprobado y publicado!");
+    } catch (e) {
+        pendingAssets.splice(idx, 0, aprobado);
+        assets.pop();
+        showNotify("No se pudo aprobar: " + e.message, "error");
+    }
+    renderPendingList();
+}
+
+function updatePendingTabVisibility() {
+    const tabBtn = document.getElementById('tabPending');
+    if (!tabBtn) return;
+    tabBtn.classList.toggle('hidden', !isCurrentUserVyn());
+}
+
 function prepareEdit(id, source = 'admin') {
-    const a = assets.find(x => x.id == id);
+    const a = (source === 'pending' ? pendingAssets : assets).find(x => x.id == id);
     if (!a) return;
     document.getElementById('editId').value = a.id;
-    document.getElementById('editSource').value = 'admin';
+    document.getElementById('editSource').value = source;
     document.getElementById('assetTitle').value = a.title;
     document.getElementById('assetDesc').value = a.desc || "";
     document.getElementById('assetDescShort').value = a.descShort || "";
@@ -937,15 +1035,26 @@ document.getElementById('confirmDeleteUserBtn')?.addEventListener('click', async
 
 function openDeleteModal(id, source = 'admin') {
     assetToDelete = id;
+    assetToDeleteSource = source;
+    const title = document.querySelector('#deleteModal h3');
+    if (title) title.innerText = source === 'pending' ? 'Rechazar este asset?' : 'Delete permanently?';
     document.getElementById('deleteModal').classList.remove('hidden');
 }
 function closeDeleteModal() {
     document.getElementById('deleteModal').classList.add('hidden');
 }
 document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () => {
-    assets = assets.filter(x => x.id != assetToDelete);
-    await persistAssets();
-    renderManageList();
-    closeDeleteModal();
-    showNotify("Asset removed!");
+    if (assetToDeleteSource === 'pending') {
+        pendingAssets = pendingAssets.filter(x => x.id != assetToDelete);
+        await persistPending();
+        renderPendingList();
+        closeDeleteModal();
+        showNotify("Asset rechazado.");
+    } else {
+        assets = assets.filter(x => x.id != assetToDelete);
+        await persistAssets();
+        renderManageList();
+        closeDeleteModal();
+        showNotify("Asset removed!");
+    }
 });
