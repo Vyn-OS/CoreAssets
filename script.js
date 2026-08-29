@@ -182,7 +182,17 @@ async function refreshPendingFromServer() {
         const data = await res.json().catch(() => ({}));
         if (res.ok && Array.isArray(data.items)) {
             pendingQueue = data.items;
-            pendingAssets = data.items.map(x => fromFileFormat(x.asset));
+            // The queue entry's own id (x.id, minted by the Worker at
+            // submission time) is what /pending-approve, /pending-reject and
+            // /pending-update expect. It is NOT the same as the wrapped
+            // asset's own id (x.asset.id, minted client-side when the form
+            // was first filled). Keep both: queueId for talking to the
+            // Worker, id for everything else (editing fields, images...).
+            pendingAssets = data.items.map(x => {
+                const a = fromFileFormat(x.asset);
+                a.queueId = x.id;
+                return a;
+            });
         }
     } catch (e) {
         console.error('No se pudo cargar la cola de revisión', e);
@@ -251,6 +261,15 @@ async function persistUsers() {
 }
 
 const allAssets = [...assets];
+
+// assetId -> { comments, rating, downloads }. Declared here (before the
+// first renderAssetGrid() runs at the bottom of this file) on purpose: a
+// `const` referenced before its own declaration line has executed throws
+// (temporal dead zone), and since that first render happens synchronously
+// on page load, that used to kill the rest of the script silently — which
+// is why filters, comments and downloads all looked broken at once.
+const __extrasCache = {};
+
 
 const FAVORITES_KEY = 'coreassets_favorites';
 
@@ -617,7 +636,22 @@ async function enterAdminPanel() {
     updatePendingTabVisibility();
     await refreshPendingFromServer();
     renderManageList();
+    updateAdminStats();
     showNotify("Access granted!");
+}
+
+// --- Admin stat strip: quick read of the panel's own state, no extra
+// network calls beyond what refreshPendingFromServer() already fetched.
+function updateAdminStats() {
+    const totalEl = document.getElementById('statTotalAssets');
+    const pendingEl = document.getElementById('statTotalPending');
+    const usersEl = document.getElementById('statTotalUsers');
+    const roleEl = document.getElementById('statCurrentRole');
+    if (!totalEl) return;
+    totalEl.innerText = String(allAssets.length);
+    pendingEl.innerText = String((pendingAssets || []).length);
+    usersEl.innerText = String((adminUsers || []).length);
+    roleEl.innerText = isCurrentUserVyn() ? 'Vyn' : 'Mod';
 }
 
 function showUsernamePrompt() {
@@ -711,7 +745,7 @@ async function saveAsset() {
         if (id) {
 
             if (source === 'pending') {
-                const a = pendingAssets.find(x => x.id == id);
+                const a = pendingAssets.find(x => x.queueId == id);
                 if (!a) return showNotify("Asset not found.", "error");
                 a.title = title; a.desc = desc; a.descShort = descShort; a.fileUrl = fileUrl; a.status = status; a.fail = fail;
                 a.fileFormat = fileFormat; a.fileSize = fileSize; a.categoria = categoria;
@@ -799,7 +833,7 @@ function renderAssetGrid() {
         const badge = a.status && a.status !== 'nenhum' ? `<span class="absolute top-4 left-4 px-3 py-1 rounded-full text-[10px] font-black uppercase badge-${a.status} z-10">${escapeHTML(label)}</span>` : '';
 
         const fileMeta = (a.fileFormat || a.fileSize) ? `
-                        <div class="flex gap-2 mt-3">
+                        <div class="flex gap-2 mt-3 font-mono">
                             ${a.fileFormat ? `<span class="bg-white/5 text-slate-300 text-[10px] font-bold uppercase px-2 py-1 rounded-lg">${escapeHTML(a.fileFormat)}</span>` : ''}
                             ${a.fileSize ? `<span class="bg-white/5 text-slate-300 text-[10px] font-bold uppercase px-2 py-1 rounded-lg">${escapeHTML(a.fileSize)}</span>` : ''}
                         </div>` : '';
@@ -818,9 +852,9 @@ function renderAssetGrid() {
                 <div onclick="openAssetDetail('${a.id}')" class="cursor-pointer">
                     ${renderMedia(a.img, 'h-52 w-full', 'transition-transform duration-500 group-hover:scale-110', false, true)}
                     <div class="p-6">
-                        <h3 class="text-xl font-bold mb-2 transition-colors">${escapeHTML(a.title)}</h3>
+                        <h3 class="font-display text-xl font-bold mb-2 transition-colors">${escapeHTML(a.title)}</h3>
                         <p class="text-slate-500 text-sm line-clamp-2">${escapeHTML(a.descShort || a.desc || 'Click to see details.')}</p>
-                        <div class="flex items-center gap-2 mt-3 text-[11px] text-slate-500">
+                        <div class="flex items-center gap-2 mt-3 text-[11px] text-slate-500 font-mono">
                             <span class="asset-rating-summary" data-asset-id="${a.id}">☆☆☆☆☆</span>
                             <span class="asset-download-count" data-asset-id="${a.id}"></span>
                         </div>
@@ -834,9 +868,22 @@ function renderAssetGrid() {
     itemsFiltrados.forEach(a => refreshCardStats(a.id));
 }
 
+// --- Hero stat strip (index.html only). Purely derived from the in-memory
+// asset list, no extra network calls.
+function updateHeroStats() {
+    const countEl = document.getElementById('statAssetCount');
+    const catEl = document.getElementById('statCategoryCount');
+    if (!countEl || !catEl) return;
+    const cats = new Set();
+    allAssets.forEach(a => (a.categoria || []).forEach(c => cats.add(String(c).toUpperCase())));
+    countEl.innerText = String(allAssets.length);
+    catEl.innerText = String(cats.size);
+}
+
 if (document.getElementById('assetGrid')) {
     renderFilters();
     renderAssetGrid();
+    updateHeroStats();
 }
 
 if (document.getElementById('assetImgList')) {
@@ -866,12 +913,12 @@ function buildAssetDetailHTML(a) {
             <div class="p-10 text-left">
                 ${(a.categoria && a.categoria.length) ? `<span class="inline-block mb-4 px-3 py-1 rounded-full text-[10px] font-black uppercase bg-cyan-400/10 text-cyan-400 border border-cyan-400/20">${escapeHTML(a.categoria.join(' / '))}</span>` : ''}
                 <div class="flex justify-between items-center mb-6 gap-3">
-                    <h1 class="text-4xl font-black">${escapeHTML(a.title)}</h1>
+                    <h1 class="font-display text-4xl font-bold">${escapeHTML(a.title)}</h1>
                     <div class="flex items-center gap-2 shrink-0">
                         <button onclick="toggleFavorite('${a.id}')" data-id="${a.id}" data-context="modal" class="fav-btn bg-black/20 border border-white/5 hover:bg-slate-800 w-11 h-11 flex items-center justify-center rounded-xl transition">
                             <svg class="fav-icon" width="18" height="18" viewBox="0 0 24 24" fill="${isFavorite(a.id) ? '#ef4444' : 'none'}" stroke="${isFavorite(a.id) ? '#ef4444' : '#ffffff'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.7-4.35-9.3-8.28C1.1 10.3 1.7 6.9 4.6 5.4c2.4-1.24 5-.3 6.4 1.7 1.4-2 4-2.94 6.4-1.7 2.9 1.5 3.5 4.9 1.9 7.32C18.7 16.65 12 21 12 21z"/></svg>
                         </button>
-                        <span class="px-4 py-2 rounded-full text-[10px] font-black uppercase bg-blue-600/20 text-blue-400 border border-blue-500/20">${escapeHTML(label)}</span>
+                        <span class="font-mono px-4 py-2 rounded-full text-[10px] font-black uppercase bg-blue-600/20 text-blue-400 border border-blue-500/20">${escapeHTML(label)}</span>
                     </div>
                 </div>
 
@@ -880,13 +927,13 @@ function buildAssetDetailHTML(a) {
                 </div>
 
                 ${(a.fileFormat || a.fileSize) ? `
-                <div class="flex gap-3 mb-8">
+                <div class="flex gap-3 mb-8 font-mono">
                     ${a.fileFormat ? `<div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Format</p><p class="font-bold">${escapeHTML(a.fileFormat)}</p></div>` : ''}
                     ${a.fileSize ? `<div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Size</p><p class="font-bold">${escapeHTML(a.fileSize)}</p></div>` : ''}
                     <div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Descargas</p><p id="downloadCount-${a.id}" class="font-bold">—</p></div>
                 </div>` : ''}
                 <div class="bg-black/20 p-6 rounded-2xl border border-white/5 mb-8">
-                    <h3 class="text-blue-500 font-bold mb-2 uppercase text-xs">Description</h3>
+                    <h3 class="font-display text-blue-500 font-bold mb-2 uppercase text-xs tracking-wide">Description</h3>
                     <p class="text-slate-300 leading-relaxed whitespace-pre-line">${escapeHTML(a.desc || 'No technical description available.')}</p>
                 </div>
                 <button onclick="handleDownload('${a.id}')" class="w-full bg-blue-600 py-6 rounded-2xl font-black text-2xl hover:bg-blue-500 transition shadow-xl shadow-blue-900/30">
@@ -894,7 +941,7 @@ function buildAssetDetailHTML(a) {
                 </button>
 
                 <div class="mt-10 pt-8 border-t border-white/5">
-                    <h3 class="text-blue-500 font-bold mb-4 uppercase text-xs">Comentarios</h3>
+                    <h3 class="font-display text-blue-500 font-bold mb-4 uppercase text-xs tracking-wide">Comentarios</h3>
                     <div class="flex gap-3 mb-5">
                         <input type="text" id="commentInput-${a.id}" maxlength="500" placeholder="Escribe un comentario..." class="flex-1 bg-black/40 p-4 rounded-xl border border-white/5 outline-none focus:border-blue-500 text-sm">
                         <button id="commentBtn-${a.id}" onclick="submitComment('${a.id}')" class="bg-blue-600 hover:bg-blue-500 px-5 rounded-xl font-bold text-sm transition">Enviar</button>
@@ -1015,13 +1062,11 @@ function handleDownload(id) {
 
 // ============================================================
 // Comments, ratings & download counters
-// Backed by new public Worker endpoints (see cloudflare-worker-additions.js).
+// Backed by new public Worker endpoints (see worker.js).
 // These are unauthenticated on purpose (any visitor can comment/rate),
 // so every value coming back from the server is treated as untrusted and
 // escaped before it ever touches innerHTML.
 // ============================================================
-
-const __extrasCache = {}; // assetId -> { comments, rating, downloads }
 
 async function loadAssetExtras(id) {
     try {
@@ -1206,8 +1251,9 @@ function switchTab(t) {
 
     if (t === 'manage') renderManageList();
     if (t === 'users') renderUsersList();
-    if (t === 'pending') { renderPendingList(); refreshPendingFromServer().then(renderPendingList); }
+    if (t === 'pending') { renderPendingList(); refreshPendingFromServer().then(() => { renderPendingList(); updateAdminStats(); }); }
     if (t === 'comments') renderCommentsModeration();
+    updateAdminStats();
 }
 
 // --- Admin comment moderation: pulls every asset's comments from the
@@ -1287,7 +1333,7 @@ function renderPendingList() {
     const myDeviceId = getDeviceId();
 
     pendingAssets.forEach(a => {
-        const record = pendingQueue.find(x => x.id == a.id);
+        const record = pendingQueue.find(x => x.id == a.queueId);
         const isOwn = record && record.submittedBy === myDeviceId;
         const tag = `<span class="bg-yellow-600/20 text-yellow-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">${escapeHTML(a.autor || 'Admin')}</span>`;
 
@@ -1302,10 +1348,10 @@ function renderPendingList() {
                     </div>
                 </div>
                 <div class="flex gap-2">
-                    <button onclick="prepareEdit('${a.id}', 'pending')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>
-                    <button onclick="approvePending('${a.id}')" ${isOwn ? 'disabled title="No puedes aprobar tu propia publicación"' : ''}
+                    <button onclick="prepareEdit('${a.queueId}', 'pending')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>
+                    <button onclick="approvePending('${a.queueId}')" ${isOwn ? 'disabled title="No puedes aprobar tu propia publicación"' : ''}
                         class="px-4 py-2 rounded-xl text-xs font-bold uppercase ${isOwn ? 'bg-slate-800 text-slate-600 cursor-not-allowed' : 'bg-green-600/10 text-green-500'}">Aprobar</button>
-                    <button onclick="openDeleteModal('${a.id}', 'pending')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">${isOwn ? 'Retirar' : 'Rechazar'}</button>
+                    <button onclick="openDeleteModal('${a.queueId}', 'pending')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">${isOwn ? 'Retirar' : 'Rechazar'}</button>
                 </div>
             </div>`;
     });
@@ -1321,6 +1367,7 @@ async function approvePending(id) {
         await refreshPendingFromServer();
         renderPendingList();
         await refreshAssetsFromKV();
+        updateAdminStats();
     } catch (e) {
         showNotify("No se pudo aprobar: " + e.message, "error");
     }
@@ -1333,9 +1380,9 @@ function updatePendingTabVisibility() {
 }
 
 function prepareEdit(id, source = 'admin') {
-    const a = (source === 'pending' ? pendingAssets : assets).find(x => x.id == id);
+    const a = source === 'pending' ? pendingAssets.find(x => x.queueId == id) : assets.find(x => x.id == id);
     if (!a) return;
-    document.getElementById('editId').value = a.id;
+    document.getElementById('editId').value = id;
     document.getElementById('editSource').value = source;
     document.getElementById('assetTitle').value = a.title;
     document.getElementById('assetDesc').value = a.desc || "";
@@ -1424,6 +1471,7 @@ document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () 
             await workerCall('/pending-reject', { id: assetToDelete, deviceId: getDeviceId() });
             await refreshPendingFromServer();
             renderPendingList();
+            updateAdminStats();
             closeDeleteModal();
             showNotify("Asset rechazado.");
         } catch (e) {
@@ -1434,6 +1482,7 @@ document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () 
         assets = assets.filter(x => x.id != assetToDelete);
         await persistAssets();
         renderManageList();
+        updateAdminStats();
         closeDeleteModal();
         showNotify("Asset removed!");
     }
@@ -1453,7 +1502,7 @@ async function refreshAssetsFromKV() {
         allAssets.length = 0;
         allAssets.push(...assets);
 
-        if (document.getElementById('assetGrid')) { renderFilters(); renderAssetGrid(); }
+        if (document.getElementById('assetGrid')) { renderFilters(); renderAssetGrid(); updateHeroStats(); }
         if (document.getElementById('existingAssetsList') && !document.getElementById('sectionManage')?.classList.contains('hidden')) renderManageList();
     } catch (e) {  }
 }
