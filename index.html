@@ -6,6 +6,21 @@
     <title>CoreAssets | Hub</title>
     <link rel="icon" type="image/png" href="https://i.postimg.cc/sDZXt2W9/imagen.png">
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        display: ['"Space Grotesk"', 'system-ui', 'sans-serif'],
+                        mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace']
+                    }
+                }
+            }
+        };
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
     <style>
         .badge-novo { background: #10b981; }
@@ -59,6 +74,32 @@
         .lazy-media { transition: background-image .2s ease; }
         .rate-star { cursor: pointer; background: none; border: none; padding: 0; }
         .rate-star:focus { outline: none; }
+
+        /* --- Signature element: a faint vertex/wireframe grid, evoking the
+           3D mesh data this whole library exists to host. Pure CSS, two
+           layered gradients (lines + intersection dots) with a slow drift. */
+        .vertex-grid {
+            position: absolute;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(59,130,246,0.10) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(59,130,246,0.10) 1px, transparent 1px),
+                radial-gradient(rgba(56,189,248,0.35) 1px, transparent 1.4px);
+            background-size: 42px 42px, 42px 42px, 42px 42px;
+            background-position: 0 0, 0 0, 0 0;
+            mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 90%);
+            -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 90%);
+            animation: gridDrift 26s linear infinite;
+        }
+        @keyframes gridDrift {
+            from { background-position: 0 0, 0 0, 0 0; }
+            to { background-position: 42px 42px, 42px 42px, 42px 42px; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .vertex-grid { animation: none; }
+        }
+
+        .font-display { font-family: '"Space Grotesk"', system-ui, sans-serif; }
     </style>
 </head>
 <body class="bg-[#0b0e14] text-white min-h-screen">
@@ -66,7 +107,7 @@
 
     <div id="pageWrapper">
         <nav class="flex flex-wrap justify-between items-center gap-4 px-10 py-6 border-b border-white/5 sticky top-0 bg-[#0b0e14]/90 backdrop-blur-md z-40">
-            <div class="text-2xl font-black text-blue-500 cursor-pointer" onclick="location.href='index.html'">CORE<span class="text-white">ASSETS</span></div>
+            <div class="font-display text-2xl font-bold tracking-tight text-blue-500 cursor-pointer" onclick="location.href='index.html'">CORE<span class="text-white">ASSETS</span></div>
 
             <div id="filter-container" class="flex flex-col items-center gap-2 order-3 md:order-none w-full md:w-auto">
                 <div id="main-filters" class="flex justify-center gap-2 flex-wrap"></div>
@@ -84,6 +125,24 @@
             </div>
         </nav>
 
+        <header class="relative overflow-hidden border-b border-white/5">
+            <div class="vertex-grid pointer-events-none"></div>
+            <div class="relative container mx-auto px-6 pt-16 pb-14 text-center">
+                <p class="font-mono text-[11px] tracking-[0.25em] text-cyan-400/80 uppercase mb-4">Índice de assets 3D para desarrollo</p>
+                <h1 class="font-display text-4xl md:text-6xl font-bold tracking-tight mb-4">
+                    CORE<span class="text-blue-500">/</span>ASSETS
+                </h1>
+                <p class="text-slate-400 max-w-xl mx-auto mb-8">Mallas, animaciones y GUIs listas para descargar, revisadas y publicadas a mano — sin cuentas, sin letra pequeña.</p>
+                <div id="heroStats" class="font-mono flex items-center justify-center gap-6 text-xs text-slate-500">
+                    <span><span id="statAssetCount" class="text-white font-semibold">—</span> assets</span>
+                    <span class="w-1 h-1 rounded-full bg-slate-700"></span>
+                    <span><span id="statCategoryCount" class="text-white font-semibold">—</span> categorías</span>
+                    <span class="w-1 h-1 rounded-full bg-slate-700"></span>
+                    <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>publicación en vivo</span>
+                </div>
+            </div>
+        </header>
+
         <main class="container mx-auto px-6 py-12">
             <div id="assetGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                 </div>
@@ -92,7 +151,7 @@
         <footer class="border-t border-white/5 mt-12">
             <div class="container mx-auto px-6 py-12 grid grid-cols-1 md:grid-cols-2 gap-10 text-sm">
                 <div>
-                    <h3 class="text-white font-bold uppercase text-xs tracking-widest mb-3">Créditos &amp; Términos de uso</h3>
+                    <h3 class="font-display text-white font-bold uppercase text-xs tracking-widest mb-3">Créditos &amp; Términos de uso</h3>
                     <p class="text-slate-500 leading-relaxed">
                         Todos los assets publicados en este sitio pertenecen a sus respectivos creadores originales.
                         Este sitio no reclama autoría ni propiedad sobre ningún archivo listado; funciona únicamente
@@ -101,7 +160,7 @@
                     </p>
                 </div>
                 <div>
-                    <h3 class="text-white font-bold uppercase text-xs tracking-widest mb-3">Solicitar retiro de un asset</h3>
+                    <h3 class="font-display text-white font-bold uppercase text-xs tracking-widest mb-3">Solicitar retiro de un asset</h3>
                     <p class="text-slate-500 leading-relaxed mb-4">
                         ¿Eres el creador original de un asset publicado aquí y quieres que lo bajemos?
                         Escríbenos y lo resolvemos directamente, sin necesidad de una notificación formal.
