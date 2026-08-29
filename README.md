@@ -40,8 +40,6 @@ Vyn-users.js        → Usuarios registrados con acceso al panel admin
 worker.js           → Cloudflare Worker (backend): auth, publicación vía GitHub API, comentarios, ratings y descargas
 ```
 
-> Los comentarios, valoraciones y contadores de descarga NO se guardan en `Vyn-assets.js` — viven en el mismo KV del Worker que ya usas para sesiones y caché, para no disparar un commit a GitHub cada vez que alguien comenta o descarga algo.
-
 ## Créditos y uso de los assets
 
 Todos los assets publicados en este sitio pertenecen a sus respectivos creadores originales. Este repositorio y sitio no reclaman autoría ni propiedad sobre ningún archivo listado; funcionan únicamente como un índice de referencia.
