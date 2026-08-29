@@ -15,6 +15,12 @@ CoreAssets es una galería pública donde se listan assets descargables organiza
   - Publicación directa al repositorio vía GitHub API (los cambios se ven reflejados en el sitio en ~1 minuto).
   - Sistema de usuarios registrados por dispositivo: el primer acceso pide elegir un nombre de usuario único, vinculado a ese navegador.
   - Gestión de acceso: solo el usuario `Vyn` puede revocar el acceso de otros usuarios registrados.
+  - Moderación de comentarios: pestaña "Comments" para eliminar comentarios de spam o abusivos.
+- **Comentarios por asset**, públicos, con límite de longitud y rate-limit por dispositivo.
+- **Valoraciones (1–5 estrellas)** por asset, una por dispositivo, con promedio visible en la galería y en el detalle.
+- **Contador de descargas** por asset, visible en la galería y en el detalle.
+- **Carga diferida (lazy loading)** de las imágenes de portada en la galería, para una carga inicial más rápida.
+- **Endurecimiento de seguridad**: todo el contenido dinámico (títulos, descripciones, comentarios, nombres de usuario) se escapa antes de insertarse en la página para prevenir XSS, y el login del panel admin tiene un freno básico ante intentos fallidos repetidos.
 
 ## Tecnologías
 
@@ -31,7 +37,10 @@ script.js          → Lógica compartida (galería, admin, login, usuarios)
 style.css          → Estilos de la vista pública
 Vyn-assets.js       → Datos de los assets publicados
 Vyn-users.js        → Usuarios registrados con acceso al panel admin
+worker.js           → Cloudflare Worker (backend): auth, publicación vía GitHub API, comentarios, ratings y descargas
 ```
+
+> Los comentarios, valoraciones y contadores de descarga NO se guardan en `Vyn-assets.js` — viven en el mismo KV del Worker que ya usas para sesiones y caché, para no disparar un commit a GitHub cada vez que alguien comenta o descarga algo.
 
 ## Créditos y uso de los assets
 
