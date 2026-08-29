@@ -1,5 +1,28 @@
 const WORKER_URL = 'https://coreassets-admin.normal8607.workers.dev';
 
+// --- Security: escape any untrusted string before it goes into innerHTML.
+// Used for asset titles/descriptions (can come from public pending submissions)
+// and for comments/usernames (always public input). Never skip this for
+// anything that did not originate from a trusted hardcoded template.
+function escapeHTML(str) {
+    return String(str == null ? '' : str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// --- Performance: generic debounce helper, used to avoid firing a network
+// request or a re-render on every single keystroke/click.
+function debounce(fn, wait = 250) {
+    let t = null;
+    return (...args) => {
+        clearTimeout(t);
+        t = setTimeout(() => fn(...args), wait);
+    };
+}
+
 const ADMIN_PASS_KEY = 'coreassets_admin_pass';
 
 function getSavedAdminPass() {
@@ -326,7 +349,7 @@ function animarCambioDeGrid() {
     }, 200);
 }
 
-function renderMedia(url, sizeClasses, extraClasses = '', interactive = false) {
+function renderMedia(url, sizeClasses, extraClasses = '', interactive = false, lazy = false) {
     if (!url) return `<div class="${sizeClasses} ${extraClasses} bg-slate-800"></div>`;
 
     const streamableMatch = url.match(/streamable\.com\/([a-zA-Z0-9]+)/i);
@@ -342,7 +365,42 @@ function renderMedia(url, sizeClasses, extraClasses = '', interactive = false) {
         return `<video class="${sizeClasses} ${extraClasses} object-cover" src="${url}" autoplay muted loop playsinline ${interactive ? 'controls' : ''}></video>`;
     }
 
+    // Perf: grid cards defer loading their background image until they are
+    // about to enter the viewport (see initLazyMedia), instead of every
+    // card's image downloading immediately on page load.
+    if (lazy) {
+        return `<div class="${sizeClasses} ${extraClasses} bg-cover bg-center lazy-media bg-slate-800" data-bg-url="${url.replace(/"/g, '&quot;')}"></div>`;
+    }
+
     return `<div class="${sizeClasses} ${extraClasses} bg-cover bg-center" style="background-image: url('${url}')"></div>`;
+}
+
+// --- Performance: single shared IntersectionObserver reused for every grid
+// render, instead of downloading every card's cover image up front.
+let __lazyMediaObserver = null;
+function initLazyMedia() {
+    if (!('IntersectionObserver' in window)) {
+        document.querySelectorAll('.lazy-media[data-bg-url]').forEach(el => {
+            el.style.backgroundImage = `url('${el.getAttribute('data-bg-url')}')`;
+            el.removeAttribute('data-bg-url');
+        });
+        return;
+    }
+    if (!__lazyMediaObserver) {
+        __lazyMediaObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (!entry.isIntersecting) return;
+                const el = entry.target;
+                const url = el.getAttribute('data-bg-url');
+                if (url) {
+                    el.style.backgroundImage = `url('${url}')`;
+                    el.removeAttribute('data-bg-url');
+                }
+                __lazyMediaObserver.unobserve(el);
+            });
+        }, { rootMargin: '200px 0px' });
+    }
+    document.querySelectorAll('.lazy-media[data-bg-url]').forEach(el => __lazyMediaObserver.observe(el));
 }
 
 function showNotify(text, type = 'success') {
@@ -421,13 +479,44 @@ function updateAdminQuickLabel() {
     label.classList.toggle('opacity-0', input.value.length > 0);
 }
 
+// --- Security: soft client-side brake on repeated failed login attempts.
+// This is only a UX deterrent against casual brute-forcing — the real
+// protection has to live on the Worker, which is the only side that can't
+// be bypassed by editing this file.
+const LOGIN_ATTEMPTS_KEY = 'coreassets_login_attempts';
+function registerFailedLoginAttempt() {
+    let data;
+    try { data = JSON.parse(sessionStorage.getItem(LOGIN_ATTEMPTS_KEY)) || { count: 0, until: 0 }; }
+    catch (e) { data = { count: 0, until: 0 }; }
+    data.count += 1;
+    if (data.count >= 5) data.until = Date.now() + 30000;
+    try { sessionStorage.setItem(LOGIN_ATTEMPTS_KEY, JSON.stringify(data)); } catch (e) { }
+    return data;
+}
+function getLoginLockout() {
+    try {
+        const data = JSON.parse(sessionStorage.getItem(LOGIN_ATTEMPTS_KEY)) || { count: 0, until: 0 };
+        return data.until > Date.now() ? data.until : 0;
+    } catch (e) { return 0; }
+}
+function clearLoginAttempts() {
+    try { sessionStorage.removeItem(LOGIN_ATTEMPTS_KEY); } catch (e) { }
+}
+
 async function checkAdminQuickLogin(value) {
+    const lockedUntil = getLoginLockout();
+    if (lockedUntil) {
+        showNotify(`Demasiados intentos. Espera ${Math.ceil((lockedUntil - Date.now()) / 1000)}s.`, "error");
+        return;
+    }
     try {
         const token = await workerLogin(value);
+        clearLoginAttempts();
         setSessionToken(token);
         saveAdminPass(value);
         location.href = 'admin.html';
     } catch (e) {
+        registerFailedLoginAttempt();
         showNotify("Incorrect password!", "error");
         const input = document.getElementById('adminQuickPass');
         if (input) { input.value = ''; updateAdminQuickLabel(); input.focus(); }
@@ -470,13 +559,20 @@ if(passInput) {
 }
 
 async function login() {
+    const lockedUntil = getLoginLockout();
+    if (lockedUntil) {
+        showNotify(`Demasiados intentos. Espera ${Math.ceil((lockedUntil - Date.now()) / 1000)}s.`, "error");
+        return;
+    }
     const pass = document.getElementById('pass').value;
     try {
         const token = await workerLogin(pass);
+        clearLoginAttempts();
         setSessionToken(token);
         saveAdminPass(pass);
         await handlePostLoginUserCheck();
     } catch (e) {
+        registerFailedLoginAttempt();
         showNotify("Incorrect password!", "error");
     }
 }
@@ -692,23 +788,25 @@ function renderAssetGrid() {
         return;
     }
 
-    grid.innerHTML = "";
-    itemsFiltrados.forEach((a, i) => {
+    // Perf: build every card into an array and join+set innerHTML once,
+    // instead of the old grid.innerHTML += ... per card (which forces a
+    // reflow/reparse on every single iteration).
+    const cardsHTML = itemsFiltrados.map((a, i) => {
 
         const statusLabels = { 'nenhum': '', 'novo': 'New', 'limitado': 'Limited', 'recomendado': 'Recommended' };
         const label = statusLabels[a.status] || a.status;
 
-        const badge = a.status && a.status !== 'nenhum' ? `<span class="absolute top-4 left-4 px-3 py-1 rounded-full text-[10px] font-black uppercase badge-${a.status} z-10">${label}</span>` : '';
+        const badge = a.status && a.status !== 'nenhum' ? `<span class="absolute top-4 left-4 px-3 py-1 rounded-full text-[10px] font-black uppercase badge-${a.status} z-10">${escapeHTML(label)}</span>` : '';
 
         const fileMeta = (a.fileFormat || a.fileSize) ? `
                         <div class="flex gap-2 mt-3">
-                            ${a.fileFormat ? `<span class="bg-white/5 text-slate-300 text-[10px] font-bold uppercase px-2 py-1 rounded-lg">${a.fileFormat}</span>` : ''}
-                            ${a.fileSize ? `<span class="bg-white/5 text-slate-300 text-[10px] font-bold uppercase px-2 py-1 rounded-lg">${a.fileSize}</span>` : ''}
+                            ${a.fileFormat ? `<span class="bg-white/5 text-slate-300 text-[10px] font-bold uppercase px-2 py-1 rounded-lg">${escapeHTML(a.fileFormat)}</span>` : ''}
+                            ${a.fileSize ? `<span class="bg-white/5 text-slate-300 text-[10px] font-bold uppercase px-2 py-1 rounded-lg">${escapeHTML(a.fileSize)}</span>` : ''}
                         </div>` : '';
 
         const delayMs = Math.min(i, 10) * 40;
 
-        grid.innerHTML += `
+        return `
             <div class="asset-card relative bg-slate-900 border border-white/5 rounded-3xl overflow-hidden group hover:border-blue-500 transition-all duration-300 animate__animated animate__fadeInUp" style="animation-delay:${delayMs}ms; animation-duration:0.4s;">
                 ${badge}
                 <button onclick="event.stopPropagation(); handleDownload('${a.id}')" class="shortcut-btn absolute top-4 right-4 bg-blue-600 p-3 rounded-xl z-20 opacity-0 translate-y-[-10px] transition-all hover:bg-blue-500 shadow-xl">
@@ -718,15 +816,22 @@ function renderAssetGrid() {
                     <svg class="fav-icon" width="16" height="16" viewBox="0 0 24 24" fill="${isFavorite(a.id) ? '#ef4444' : 'none'}" stroke="${isFavorite(a.id) ? '#ef4444' : '#ffffff'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.7-4.35-9.3-8.28C1.1 10.3 1.7 6.9 4.6 5.4c2.4-1.24 5-.3 6.4 1.7 1.4-2 4-2.94 6.4-1.7 2.9 1.5 3.5 4.9 1.9 7.32C18.7 16.65 12 21 12 21z"/></svg>
                 </button>
                 <div onclick="openAssetDetail('${a.id}')" class="cursor-pointer">
-                    ${renderMedia(a.img, 'h-52 w-full', 'transition-transform duration-500 group-hover:scale-110')}
+                    ${renderMedia(a.img, 'h-52 w-full', 'transition-transform duration-500 group-hover:scale-110', false, true)}
                     <div class="p-6">
-                        <h3 class="text-xl font-bold mb-2 transition-colors">${a.title}</h3>
-                        <p class="text-slate-500 text-sm line-clamp-2">${a.descShort || a.desc || 'Click to see details.'}</p>
+                        <h3 class="text-xl font-bold mb-2 transition-colors">${escapeHTML(a.title)}</h3>
+                        <p class="text-slate-500 text-sm line-clamp-2">${escapeHTML(a.descShort || a.desc || 'Click to see details.')}</p>
+                        <div class="flex items-center gap-2 mt-3 text-[11px] text-slate-500">
+                            <span class="asset-rating-summary" data-asset-id="${a.id}">☆☆☆☆☆</span>
+                            <span class="asset-download-count" data-asset-id="${a.id}"></span>
+                        </div>
                         ${fileMeta}
                     </div>
                 </div>
             </div>`;
     });
+    grid.innerHTML = cardsHTML.join('');
+    initLazyMedia();
+    itemsFiltrados.forEach(a => refreshCardStats(a.id));
 }
 
 if (document.getElementById('assetGrid')) {
@@ -759,28 +864,45 @@ function buildAssetDetailHTML(a) {
                 ${navButtons}
             </div>
             <div class="p-10 text-left">
-                ${(a.categoria && a.categoria.length) ? `<span class="inline-block mb-4 px-3 py-1 rounded-full text-[10px] font-black uppercase bg-cyan-400/10 text-cyan-400 border border-cyan-400/20">${a.categoria.join(' / ')}</span>` : ''}
+                ${(a.categoria && a.categoria.length) ? `<span class="inline-block mb-4 px-3 py-1 rounded-full text-[10px] font-black uppercase bg-cyan-400/10 text-cyan-400 border border-cyan-400/20">${escapeHTML(a.categoria.join(' / '))}</span>` : ''}
                 <div class="flex justify-between items-center mb-6 gap-3">
-                    <h1 class="text-4xl font-black">${a.title}</h1>
+                    <h1 class="text-4xl font-black">${escapeHTML(a.title)}</h1>
                     <div class="flex items-center gap-2 shrink-0">
                         <button onclick="toggleFavorite('${a.id}')" data-id="${a.id}" data-context="modal" class="fav-btn bg-black/20 border border-white/5 hover:bg-slate-800 w-11 h-11 flex items-center justify-center rounded-xl transition">
                             <svg class="fav-icon" width="18" height="18" viewBox="0 0 24 24" fill="${isFavorite(a.id) ? '#ef4444' : 'none'}" stroke="${isFavorite(a.id) ? '#ef4444' : '#ffffff'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.7-4.35-9.3-8.28C1.1 10.3 1.7 6.9 4.6 5.4c2.4-1.24 5-.3 6.4 1.7 1.4-2 4-2.94 6.4-1.7 2.9 1.5 3.5 4.9 1.9 7.32C18.7 16.65 12 21 12 21z"/></svg>
                         </button>
-                        <span class="px-4 py-2 rounded-full text-[10px] font-black uppercase bg-blue-600/20 text-blue-400 border border-blue-500/20">${label}</span>
+                        <span class="px-4 py-2 rounded-full text-[10px] font-black uppercase bg-blue-600/20 text-blue-400 border border-blue-500/20">${escapeHTML(label)}</span>
                     </div>
                 </div>
+
+                <div id="ratingWidget-${a.id}" class="flex items-center gap-3 mb-6">
+                    <span class="text-slate-500 text-xs">Cargando valoración…</span>
+                </div>
+
                 ${(a.fileFormat || a.fileSize) ? `
                 <div class="flex gap-3 mb-8">
-                    ${a.fileFormat ? `<div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Format</p><p class="font-bold">${a.fileFormat}</p></div>` : ''}
-                    ${a.fileSize ? `<div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Size</p><p class="font-bold">${a.fileSize}</p></div>` : ''}
+                    ${a.fileFormat ? `<div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Format</p><p class="font-bold">${escapeHTML(a.fileFormat)}</p></div>` : ''}
+                    ${a.fileSize ? `<div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Size</p><p class="font-bold">${escapeHTML(a.fileSize)}</p></div>` : ''}
+                    <div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Descargas</p><p id="downloadCount-${a.id}" class="font-bold">—</p></div>
                 </div>` : ''}
                 <div class="bg-black/20 p-6 rounded-2xl border border-white/5 mb-8">
                     <h3 class="text-blue-500 font-bold mb-2 uppercase text-xs">Description</h3>
-                    <p class="text-slate-300 leading-relaxed whitespace-pre-line">${a.desc || 'No technical description available.'}</p>
+                    <p class="text-slate-300 leading-relaxed whitespace-pre-line">${escapeHTML(a.desc || 'No technical description available.')}</p>
                 </div>
                 <button onclick="handleDownload('${a.id}')" class="w-full bg-blue-600 py-6 rounded-2xl font-black text-2xl hover:bg-blue-500 transition shadow-xl shadow-blue-900/30">
                     DOWNLOAD
                 </button>
+
+                <div class="mt-10 pt-8 border-t border-white/5">
+                    <h3 class="text-blue-500 font-bold mb-4 uppercase text-xs">Comentarios</h3>
+                    <div class="flex gap-3 mb-5">
+                        <input type="text" id="commentInput-${a.id}" maxlength="500" placeholder="Escribe un comentario..." class="flex-1 bg-black/40 p-4 rounded-xl border border-white/5 outline-none focus:border-blue-500 text-sm">
+                        <button id="commentBtn-${a.id}" onclick="submitComment('${a.id}')" class="bg-blue-600 hover:bg-blue-500 px-5 rounded-xl font-bold text-sm transition">Enviar</button>
+                    </div>
+                    <div id="commentsList-${a.id}" class="space-y-3">
+                        <p class="text-slate-500 text-sm">Cargando comentarios…</p>
+                    </div>
+                </div>
             </div>
         </div>`;
 }
@@ -795,6 +917,7 @@ function openAssetDetail(id, replaceHistory = false) {
     if (!a) return;
 
     content.innerHTML = buildAssetDetailHTML(a);
+    loadAssetExtras(a.id);
 
     overlay.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
@@ -883,10 +1006,188 @@ function handleDownload(id) {
     const a = allAssets.find(x => x.id == id);
     if (a.fail === 'none') {
         window.open(a.fileUrl, '_blank');
+        trackDownload(id); // fire-and-forget, never blocks the actual download
     } else {
         const e = { '404': "ERROR 404", 'virus': "RISK: Virus detected!", 'limit': "LIMIT EXCEEDED" };
         showNotify(e[a.fail], "error");
     }
+}
+
+// ============================================================
+// Comments, ratings & download counters
+// Backed by new public Worker endpoints (see cloudflare-worker-additions.js).
+// These are unauthenticated on purpose (any visitor can comment/rate),
+// so every value coming back from the server is treated as untrusted and
+// escaped before it ever touches innerHTML.
+// ============================================================
+
+const __extrasCache = {}; // assetId -> { comments, rating, downloads }
+
+async function loadAssetExtras(id) {
+    try {
+        const [commentsRes, ratingRes, downloadsRes] = await Promise.all([
+            fetch(`${WORKER_URL}/comments/${id}`).then(r => r.ok ? r.json() : { items: [] }).catch(() => ({ items: [] })),
+            fetch(`${WORKER_URL}/rating/${id}`).then(r => r.ok ? r.json() : { average: 0, count: 0 }).catch(() => ({ average: 0, count: 0 })),
+            fetch(`${WORKER_URL}/downloads/${id}`).then(r => r.ok ? r.json() : { count: 0 }).catch(() => ({ count: 0 }))
+        ]);
+        __extrasCache[id] = { comments: commentsRes.items || [], rating: ratingRes, downloads: downloadsRes.count || 0 };
+    } catch (e) {
+        __extrasCache[id] = __extrasCache[id] || { comments: [], rating: { average: 0, count: 0 }, downloads: 0 };
+    }
+    renderRatingWidget(id);
+    renderComments(id);
+    const dlEl = document.getElementById(`downloadCount-${id}`);
+    if (dlEl) dlEl.innerText = String(__extrasCache[id].downloads);
+    refreshCardStats(id);
+}
+
+function refreshCardStats(id) {
+    const data = __extrasCache[id];
+    if (!data) return;
+    document.querySelectorAll(`.asset-rating-summary[data-asset-id="${id}"]`).forEach(el => {
+        el.innerHTML = starsHTML(data.rating.average) + (data.rating.count ? ` <span class="text-slate-600">(${data.rating.count})</span>` : '');
+    });
+    document.querySelectorAll(`.asset-download-count[data-asset-id="${id}"]`).forEach(el => {
+        el.innerText = data.downloads ? `· ${data.downloads} descargas` : '';
+    });
+}
+
+function starsHTML(average) {
+    const rounded = Math.round(average || 0);
+    let out = '';
+    for (let i = 1; i <= 5; i++) out += i <= rounded ? '★' : '☆';
+    return `<span class="text-yellow-500">${out}</span>`;
+}
+
+function renderRatingWidget(id) {
+    const el = document.getElementById(`ratingWidget-${id}`);
+    if (!el) return;
+    const data = __extrasCache[id] || { rating: { average: 0, count: 0 } };
+    const avg = data.rating.average || 0;
+    const count = data.rating.count || 0;
+    const myKey = `coreassets_myrating_${id}`;
+    let myRating = 0;
+    try { myRating = parseInt(localStorage.getItem(myKey) || '0', 10) || 0; } catch (e) { }
+
+    const starButtons = [1, 2, 3, 4, 5].map(n => `
+        <button type="button" onclick="submitRating('${id}', ${n})" class="rate-star text-2xl leading-none ${n <= myRating ? 'text-yellow-500' : 'text-slate-600'} hover:text-yellow-400 transition" data-n="${n}">★</button>
+    `).join('');
+
+    el.innerHTML = `
+        <div class="flex items-center gap-1">${starButtons}</div>
+        <span class="text-slate-400 text-xs">${avg.toFixed(1)} / 5 ${count ? `(${count} voto${count === 1 ? '' : 's'})` : '(sin valoraciones aún)'}</span>
+    `;
+}
+
+let __ratingInFlight = {};
+async function submitRating(id, stars) {
+    if (__ratingInFlight[id]) return; // prevents double-submit from a rapid double click
+    __ratingInFlight[id] = true;
+    try {
+        const res = await fetch(`${WORKER_URL}/rating/${id}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deviceId: getDeviceId(), stars })
+        });
+        if (!res.ok) throw new Error('No se pudo enviar la valoración');
+        const data = await res.json();
+        __extrasCache[id] = __extrasCache[id] || { comments: [], downloads: 0 };
+        __extrasCache[id].rating = data;
+        try { localStorage.setItem(`coreassets_myrating_${id}`, String(stars)); } catch (e) { }
+        renderRatingWidget(id);
+        refreshCardStats(id);
+        showNotify("¡Gracias por tu valoración!");
+    } catch (e) {
+        showNotify(e.message || "No se pudo enviar la valoración", "error");
+    } finally {
+        __ratingInFlight[id] = false;
+    }
+}
+
+function renderComments(id) {
+    const list = document.getElementById(`commentsList-${id}`);
+    if (!list) return;
+    const comments = (__extrasCache[id] && __extrasCache[id].comments) || [];
+    if (!comments.length) {
+        list.innerHTML = `<p class="text-slate-500 text-sm">Sé el primero en comentar.</p>`;
+        return;
+    }
+    // Every field here comes from other users, so it is always escaped.
+    list.innerHTML = comments.map(c => `
+        <div class="bg-black/20 border border-white/5 rounded-xl p-4">
+            <div class="flex justify-between items-center mb-1">
+                <span class="font-bold text-sm text-blue-400">${escapeHTML(c.username || 'Anónimo')}</span>
+                <span class="text-slate-600 text-[10px]">${escapeHTML(formatCommentDate(c.createdAt))}</span>
+            </div>
+            <p class="text-slate-300 text-sm whitespace-pre-line">${escapeHTML(c.text)}</p>
+        </div>
+    `).join('');
+}
+
+function formatCommentDate(iso) {
+    try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return '';
+        return d.toLocaleDateString();
+    } catch (e) { return ''; }
+}
+
+let __commentSubmitting = {};
+async function submitComment(id) {
+    const input = document.getElementById(`commentInput-${id}`);
+    const btn = document.getElementById(`commentBtn-${id}`);
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text) { showNotify("Escribe algo antes de enviar.", "error"); return; }
+    if (text.length > 500) { showNotify("Máximo 500 caracteres.", "error"); return; }
+    if (__commentSubmitting[id]) return; // basic client-side rate limit against spam-clicking
+    __commentSubmitting[id] = true;
+    if (btn) { btn.disabled = true; btn.classList.add('opacity-50'); }
+
+    try {
+        const res = await fetch(`${WORKER_URL}/comments/${id}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deviceId: getDeviceId(), username: safeUsername(), text })
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || 'No se pudo publicar el comentario');
+        }
+        const data = await res.json();
+        __extrasCache[id] = __extrasCache[id] || { rating: { average: 0, count: 0 }, downloads: 0 };
+        __extrasCache[id].comments = data.items || [];
+        input.value = '';
+        renderComments(id);
+        showNotify("Comentario publicado.");
+    } catch (e) {
+        showNotify(e.message || "No se pudo publicar el comentario", "error");
+    } finally {
+        __commentSubmitting[id] = false;
+        if (btn) { btn.disabled = false; btn.classList.remove('opacity-50'); }
+    }
+}
+
+// Public visitors are not necessarily logged into the admin user system,
+// so fall back to a friendly generic name when there's no registered device.
+function safeUsername() {
+    try {
+        const u = findUserByDeviceId(getDeviceId());
+        return (u && u.usuario) ? u.usuario : 'Visitante';
+    } catch (e) { return 'Visitante'; }
+}
+
+async function trackDownload(id) {
+    try {
+        const res = await fetch(`${WORKER_URL}/download/${id}`, { method: 'POST' });
+        if (!res.ok) return;
+        const data = await res.json();
+        __extrasCache[id] = __extrasCache[id] || { comments: [], rating: { average: 0, count: 0 } };
+        __extrasCache[id].downloads = data.count || 0;
+        const dlEl = document.getElementById(`downloadCount-${id}`);
+        if (dlEl) dlEl.innerText = String(__extrasCache[id].downloads);
+        refreshCardStats(id);
+    } catch (e) { /* counting a download must never break the actual download */ }
 }
 
 function switchTab(t) {
@@ -894,8 +1195,9 @@ function switchTab(t) {
     document.getElementById('sectionManage').classList.toggle('hidden', t !== 'manage');
     document.getElementById('sectionUsers')?.classList.toggle('hidden', t !== 'users');
     document.getElementById('sectionPending')?.classList.toggle('hidden', t !== 'pending');
+    document.getElementById('sectionComments')?.classList.toggle('hidden', t !== 'comments');
 
-    [['tabCreate', 'create'], ['tabManage', 'manage'], ['tabUsers', 'users'], ['tabPending', 'pending']].forEach(([elId, tabId]) => {
+    [['tabCreate', 'create'], ['tabManage', 'manage'], ['tabUsers', 'users'], ['tabPending', 'pending'], ['tabComments', 'comments']].forEach(([elId, tabId]) => {
         const btn = document.getElementById(elId);
         if (!btn) return;
         btn.classList.toggle('bg-blue-600', t === tabId);
@@ -905,6 +1207,53 @@ function switchTab(t) {
     if (t === 'manage') renderManageList();
     if (t === 'users') renderUsersList();
     if (t === 'pending') { renderPendingList(); refreshPendingFromServer().then(renderPendingList); }
+    if (t === 'comments') renderCommentsModeration();
+}
+
+// --- Admin comment moderation: pulls every asset's comments from the
+// Worker (admin-authenticated) so abusive/spam comments can be removed.
+async function renderCommentsModeration() {
+    const list = document.getElementById('commentsModerationList');
+    if (!list) return;
+    list.innerHTML = `<p class="text-slate-500 text-center py-10">Cargando comentarios…</p>`;
+    try {
+        const token = getSessionToken();
+        const res = await fetch(`${WORKER_URL}/comments-all`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!res.ok) throw new Error('No se pudieron cargar los comentarios');
+        const data = await res.json();
+        const items = data.items || [];
+        if (!items.length) { list.innerHTML = `<p class="text-slate-500 text-center py-10">No hay comentarios todavía.</p>`; return; }
+
+        list.innerHTML = items.map(c => {
+            const asset = allAssets.find(x => x.id == c.assetId);
+            const assetTitle = asset ? asset.title : `Asset #${c.assetId}`;
+            return `
+            <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
+                <div>
+                    <p class="text-slate-500 text-[10px] uppercase font-bold mb-1">${escapeHTML(assetTitle)}</p>
+                    <p class="font-bold text-sm text-blue-400">${escapeHTML(c.username || 'Anónimo')}</p>
+                    <p class="text-slate-300 text-sm">${escapeHTML(c.text)}</p>
+                </div>
+                <button onclick="deleteCommentAdmin('${c.assetId}', '${c.id}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase shrink-0">Delete</button>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        list.innerHTML = `<p class="text-red-500 text-center py-10">${escapeHTML(e.message)}</p>`;
+    }
+}
+
+async function deleteCommentAdmin(assetId, commentId) {
+    try {
+        await workerCall('/comments-delete', { assetId, commentId });
+        showNotify("Comentario eliminado.");
+        renderCommentsModeration();
+        if (__extrasCache[assetId]) {
+            __extrasCache[assetId].comments = (__extrasCache[assetId].comments || []).filter(c => c.id != commentId);
+            renderComments(assetId);
+        }
+    } catch (e) {
+        showNotify("No se pudo eliminar: " + e.message, "error");
+    }
 }
 
 function renderManageList() {
@@ -913,13 +1262,13 @@ function renderManageList() {
     const combined = assets.map(a => ({ ...a, __source: 'admin' }));
     l.innerHTML = combined.length ? "" : "<p class='text-slate-500 text-center py-10'>Empty.</p>";
     combined.forEach(a => {
-        const tag = `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">${a.autor || 'Admin'}</span>`;
+        const tag = `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">${escapeHTML(a.autor || 'Admin')}</span>`;
         l.innerHTML += `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
                 <div class="flex items-center gap-4">
-                    <img src="${a.img}" class="w-12 h-12 rounded-lg object-cover border border-white/10">
+                    <img src="${escapeHTML(a.img)}" class="w-12 h-12 rounded-lg object-cover border border-white/10">
                     <div class="flex items-center gap-2">
-                        <span class="font-bold text-sm">${a.title}</span>
+                        <span class="font-bold text-sm">${escapeHTML(a.title)}</span>
                         ${tag}
                     </div>
                 </div>
@@ -940,14 +1289,14 @@ function renderPendingList() {
     pendingAssets.forEach(a => {
         const record = pendingQueue.find(x => x.id == a.id);
         const isOwn = record && record.submittedBy === myDeviceId;
-        const tag = `<span class="bg-yellow-600/20 text-yellow-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">${a.autor || 'Admin'}</span>`;
+        const tag = `<span class="bg-yellow-600/20 text-yellow-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">${escapeHTML(a.autor || 'Admin')}</span>`;
 
         l.innerHTML += `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
                 <div class="flex items-center gap-4">
-                    <img src="${a.img}" class="w-12 h-12 rounded-lg object-cover border border-white/10">
+                    <img src="${escapeHTML(a.img)}" class="w-12 h-12 rounded-lg object-cover border border-white/10">
                     <div class="flex items-center gap-2">
-                        <span class="font-bold text-sm">${a.title}</span>
+                        <span class="font-bold text-sm">${escapeHTML(a.title)}</span>
                         ${tag}
                         ${isOwn ? '<span class="bg-slate-700 text-slate-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Tuyo</span>' : ''}
                     </div>
@@ -1016,7 +1365,7 @@ function renderUsersList() {
         l.innerHTML += `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
                 <div class="flex items-center gap-3">
-                    <span class="font-bold text-sm">${u.usuario}</span>
+                    <span class="font-bold text-sm">${escapeHTML(u.usuario)}</span>
                     ${protegido ? `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Creador</span>` : estadoTag}
                 </div>
                 <div class="flex gap-2">
