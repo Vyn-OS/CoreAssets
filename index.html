@@ -100,9 +100,103 @@
         }
 
         .font-display { font-family: '"Space Grotesk"', system-ui, sans-serif; }
+
+        /* --- Loading curtain: covers the page until everything is ready, so
+           the card entrance animations (fadeInUp) only start once the user
+           can actually see the result, instead of racing the page paint. --- */
+        #loadCurtain {
+            position: fixed;
+            inset: 0;
+            z-index: 200;
+            background: #0b0e14;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 22px;
+            transition: opacity .5s ease, visibility .5s ease;
+        }
+        #loadCurtain.curtain-hide {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }
+        #loadBarTrack {
+            width: 220px;
+            height: 3px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.08);
+            overflow: hidden;
+        }
+        #loadBar {
+            height: 100%;
+            width: 0%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, #2563eb, #38bdf8);
+            transition: width .25s ease-out;
+        }
+        /* Cards stay frozen on their first animation frame (opacity 0) until
+           the curtain lifts and adds .content-ready to <body>. */
+        .asset-card.animate__animated {
+            animation-play-state: paused;
+        }
+        body.content-ready .asset-card.animate__animated {
+            animation-play-state: running;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            #loadCurtain { transition: none; }
+        }
     </style>
 </head>
 <body class="bg-[#0b0e14] text-white min-h-screen">
+
+    <!-- Cortina de carga: se oculta cuando la página termina de cargar
+         (window 'load') y libera las animaciones de las cards. -->
+    <div id="loadCurtain">
+        <div class="font-display text-2xl font-bold tracking-tight text-blue-500">CORE<span class="text-white">ASSETS</span></div>
+        <div id="loadBarTrack"><div id="loadBar"></div></div>
+        <p class="font-mono text-[10px] tracking-[0.3em] text-slate-500 uppercase">Cargando</p>
+    </div>
+    <script>
+        (function () {
+            var curtain = document.getElementById('loadCurtain');
+            var bar = document.getElementById('loadBar');
+            if (!curtain || !bar) return;
+
+            var progress = 0;
+            var done = false;
+
+            // Fake progress that eases toward 90% while real resources load,
+            // so the bar always feels alive even though we can't know the
+            // true percentage (external CDNs, fonts, lazy images, etc).
+            var fakeInterval = setInterval(function () {
+                progress += (90 - progress) * 0.12;
+                bar.style.width = Math.min(progress, 90).toFixed(1) + '%';
+            }, 120);
+
+            function finishLoading() {
+                if (done) return;
+                done = true;
+                clearInterval(fakeInterval);
+                bar.style.width = '100%';
+                setTimeout(function () {
+                    curtain.classList.add('curtain-hide');
+                    document.body.classList.add('content-ready');
+                    setTimeout(function () { curtain.style.display = 'none'; }, 550);
+                }, 250);
+            }
+
+            if (document.readyState === 'complete') {
+                finishLoading();
+            } else {
+                window.addEventListener('load', finishLoading);
+            }
+            // Red de seguridad: si algún recurso externo se cuelga, no dejamos
+            // la cortina puesta para siempre.
+            setTimeout(finishLoading, 6000);
+        })();
+    </script>
+
     <div id="notification-container" class="fixed top-5 right-5 z-[100] flex flex-col gap-3"></div>
 
     <div id="pageWrapper">
