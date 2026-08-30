@@ -1278,9 +1278,13 @@ async function renderCommentsModeration() {
         const items = data.items || [];
         if (!items.length) { list.innerHTML = `<p class="text-slate-500 text-center py-10">No hay comentarios todavía.</p>`; return; }
 
+        const vyn = isCurrentUserVyn();
         list.innerHTML = items.map(c => {
             const asset = allAssets.find(x => x.id == c.assetId);
             const assetTitle = asset ? asset.title : `Asset #${c.assetId}`;
+            const deleteBtn = vyn
+                ? `<button onclick="deleteCommentAdmin('${c.assetId}', '${c.id}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase shrink-0">Delete</button>`
+                : '';
             return `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
                 <div>
@@ -1288,7 +1292,7 @@ async function renderCommentsModeration() {
                     <p class="font-bold text-sm text-blue-400">${escapeHTML(c.username || 'Anónimo')}</p>
                     <p class="text-slate-300 text-sm">${escapeHTML(c.text)}</p>
                 </div>
-                <button onclick="deleteCommentAdmin('${c.assetId}', '${c.id}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase shrink-0">Delete</button>
+                ${deleteBtn}
             </div>`;
         }).join('');
     } catch (e) {
