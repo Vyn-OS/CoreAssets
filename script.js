@@ -57,7 +57,7 @@ async function workerLogin(password) {
     const res = await fetch(`${WORKER_URL}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password })
+        body: JSON.stringify({ password, deviceId: getDeviceId() })
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Login fallido');
@@ -140,15 +140,8 @@ function generateAssetsFileContent(assetsArr) {
 
 async function persistAssets() {
     const content = generateAssetsFileContent(assets);
-
-    try {
-        await workerSave('/save-assets', content, 'Update assets from admin panel');
-        setFileStatus(true, 'Publicado ✔️');
-        showNotify("Cambios publicados. La web se actualiza en ~1 min.");
-    } catch (e) {
-        console.error(e);
-        showNotify("Error al publicar: " + e.message, "error");
-    }
+    await workerSave('/save-assets', content, 'Update assets from admin panel');
+    setFileStatus(true, 'Publicado ✔️');
 }
 
 // pendingQueue keeps the raw server records ({ id, asset, submittedBy, submittedAt })
@@ -757,12 +750,21 @@ async function saveAsset() {
             } else {
                 const a = assets.find(x => x.id == id);
                 if (!a) return showNotify("Asset not found.", "error");
+                const backup = { ...a };
                 a.title = title; a.desc = desc; a.descShort = descShort; a.fileUrl = fileUrl; a.status = status; a.fail = fail;
                 a.fileFormat = fileFormat; a.fileSize = fileSize; a.categoria = categoria;
                 if (imagenes.length) { a.imagenes = imagenes; a.img = imagenes[0]; }
 
+                try {
+                    await persistAssets();
+                } catch (e) {
+                    // Worker rejected it (e.g. not the owner) — undo the local
+                    // mutation so the panel doesn't show an edit that never saved.
+                    Object.assign(a, backup);
+                    renderManageList();
+                    throw e;
+                }
                 showNotify("Asset updated!");
-                await persistAssets();
                 switchTab('manage');
             }
         } else {
@@ -772,8 +774,14 @@ async function saveAsset() {
 
             if (isCurrentUserVyn()) {
                 assets.push(nuevo);
+                try {
+                    await persistAssets();
+                } catch (e) {
+                    assets = assets.filter(x => x.id !== nuevo.id);
+                    renderManageList();
+                    throw e;
+                }
                 showNotify("Asset created!");
-                await persistAssets();
                 switchTab('manage');
             } else {
                 await submitPending(toFileFormat(nuevo));
@@ -1307,8 +1315,21 @@ function renderManageList() {
     if(!l) return;
     const combined = assets.map(a => ({ ...a, __source: 'admin' }));
     l.innerHTML = combined.length ? "" : "<p class='text-slate-500 text-center py-10'>Empty.</p>";
+    const myUsername = getCurrentUsername().trim().toLowerCase();
+    const vyn = isCurrentUserVyn();
     combined.forEach(a => {
         const tag = `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">${escapeHTML(a.autor || 'Admin')}</span>`;
+        // UX-only gate: hides/disables the button for non-owners so the panel
+        // doesn't invite an action that will just get rejected. The real
+        // enforcement lives server-side in /save-assets on the Worker, since
+        // this check alone can be bypassed from the browser.
+        const isOwner = vyn || (a.autor || '').trim().toLowerCase() === myUsername;
+        const editBtn = isOwner
+            ? `<button onclick="prepareEdit('${a.id}', '${a.__source}')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>`
+            : `<button disabled title="Solo el dueño de este asset (o Vyn) puede editarlo" class="bg-slate-800 text-slate-600 px-4 py-2 rounded-xl text-xs font-bold uppercase cursor-not-allowed">Edit</button>`;
+        const deleteBtn = isOwner
+            ? `<button onclick="openDeleteModal('${a.id}', '${a.__source}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Delete</button>`
+            : `<button disabled title="Solo el dueño de este asset (o Vyn) puede eliminarlo" class="bg-slate-800 text-slate-600 px-4 py-2 rounded-xl text-xs font-bold uppercase cursor-not-allowed">Delete</button>`;
         l.innerHTML += `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
                 <div class="flex items-center gap-4">
@@ -1319,8 +1340,8 @@ function renderManageList() {
                     </div>
                 </div>
                 <div class="flex gap-2">
-                    <button onclick="prepareEdit('${a.id}', '${a.__source}')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>
-                    <button onclick="openDeleteModal('${a.id}', '${a.__source}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Delete</button>
+                    ${editBtn}
+                    ${deleteBtn}
                 </div>
             </div>`;
     });
@@ -1479,12 +1500,23 @@ document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () 
             showNotify("No se pudo rechazar: " + e.message, "error");
         }
     } else {
+        const previousAssets = assets;
         assets = assets.filter(x => x.id != assetToDelete);
-        await persistAssets();
-        renderManageList();
-        updateAdminStats();
-        closeDeleteModal();
-        showNotify("Asset removed!");
+        try {
+            await workerSave('/save-assets', generateAssetsFileContent(assets), 'Update assets from admin panel');
+            setFileStatus(true, 'Publicado ✔️');
+            renderManageList();
+            updateAdminStats();
+            closeDeleteModal();
+            showNotify("Asset removed!");
+        } catch (e) {
+            // The Worker rejected the delete (e.g. not the owner and not Vyn) —
+            // restore local state so the UI doesn't show a change that never saved.
+            assets = previousAssets;
+            renderManageList();
+            closeDeleteModal();
+            showNotify("No se pudo eliminar: " + e.message, "error");
+        }
     }
 });
 
