@@ -181,7 +181,27 @@
                 bar.style.width = '100%';
                 setTimeout(function () {
                     curtain.classList.add('curtain-hide');
-                    document.body.classList.add('content-ready');
+
+                    // Fuerza al navegador a pintar el estado "paused" de cada
+                    // card antes de soltarlo. En algunos Chromium sobre
+                    // Windows 10 (rutas de aceleración por GPU distintas),
+                    // si el cambio a play-state:running llega en el mismo
+                    // frame que la clase, la animación no llega a
+                    // reproducirse y salta directo a su estado final —
+                    // por eso las cards aparecían "de golpe".
+                    document.querySelectorAll('.asset-card.animate__animated').forEach(function (card) {
+                        void card.offsetWidth; // fuerza reflow del estado pausado
+                    });
+
+                    // Se activa recién en el siguiente frame de pintado (doble
+                    // rAF), para asegurar que el navegador ya registró el
+                    // estado pausado antes de pasar a running.
+                    requestAnimationFrame(function () {
+                        requestAnimationFrame(function () {
+                            document.body.classList.add('content-ready');
+                        });
+                    });
+
                     setTimeout(function () { curtain.style.display = 'none'; }, 550);
                 }, 250);
             }
