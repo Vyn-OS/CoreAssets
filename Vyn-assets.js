@@ -108,7 +108,7 @@ var assetsCreados = [
         "imagens": [
             "https://i.postimg.cc/HxFqDdDp/imagen.png"
         ],
-        "linkDownload": "https://drive.google.com/file/d/1WuBujbZ9hissdXYDgjLUrB8qgPtxj-na/view?usp=drive_link",
+        "linkDownload": "https://drive.google.com/file/d/1tVT4Osi3s26FclJQM4viz4HOxulgj4ps/view",
         "formato": ".rbxm",
         "tamanho": "10.00 MB",
         "status": "nenhum",
