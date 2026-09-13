@@ -32,12 +32,12 @@ CoreAssets es una galería pública donde se listan assets descargables organiza
 
 ```
 index.html        → Página pública (galería)
-admin.html         → Panel de administración
-script.js          → Lógica compartida (galería, admin, login, usuarios)
-style.css          → Estilos de la vista pública
-Vyn-assets.js       → Datos de los assets publicados
-Vyn-users.js        → Usuarios registrados con acceso al panel admin
-worker.js           → Cloudflare Worker (backend): auth, publicación vía GitHub API, comentarios, ratings y descargas
+admin.html        → Panel de administración
+script.js         → Lógica compartida (galería, admin, login, usuarios)
+style.css         → Estilos de la vista pública
+Vyn-assets.js     → Datos de los assets publicados
+Vyn-users.js      → Usuarios registrados con acceso al panel admin
+worker.js         → Cloudflare Worker (backend): auth, publicación vía GitHub API, comentarios, ratings y descargas
 ```
 ## Créditos y uso de los assets
 
