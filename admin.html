@@ -58,6 +58,44 @@
         .toast-out { animation: toastOut 0.3s ease forwards; }
 
         .font-display { font-family: '"Space Grotesk"', system-ui, sans-serif; }
+
+        /* ============================================================
+           FIX WINDOWS 10 — prefers-reduced-motion
+           Windows 10 activa "reduce animations" a nivel de sistema en
+           muchos equipos. Eso dispara prefers-reduced-motion:reduce en
+           TODOS los navegadores, y animate.css 4.1.1 deja sus animaciones
+           en 1ms (secciones del admin con fadeIn, toasts, etc.).
+           Todo lo de este panel es decoración sutil y breve, así que lo
+           reactivamos. Este bloque va al final del <style>, por lo tanto
+           gana por orden de aparición frente al de animate.css.
+           ============================================================ */
+        @media (prefers-reduced-motion: reduce) {
+
+            /* Deshace el "1ms" que mete animate.css por su cuenta */
+            .animate__animated {
+                animation-duration: 1s !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.35s !important;
+            }
+
+            /* Punto verde "en vivo" (Tailwind animate-pulse) */
+            .animate-pulse {
+                animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite !important;
+            }
+            @keyframes pulse {
+                0%, 100% { opacity: 1; }
+                50% { opacity: .5; }
+            }
+
+            /* Icono del botón de descarga */
+            .download-icon-pulse {
+                animation: downloadPulse 0.9s ease-in-out infinite !important;
+            }
+
+            /* Toasts */
+            .toast-in  { animation: toastIn  0.4s cubic-bezier(.22,1,.36,1) forwards !important; }
+            .toast-out { animation: toastOut 0.3s ease forwards !important; }
+        }
     </style>
 </head>
 <body class="bg-slate-950 text-white min-h-screen">
