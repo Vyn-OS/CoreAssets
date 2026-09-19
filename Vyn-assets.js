@@ -99,7 +99,7 @@ var assetsCreados = [
     },
     {
         "id": 1786893003537,
-        "nome": "Moon animator 1",
+        "nome": "Moon animator",
         "categoria": [
             "ANIMATIONS"
         ],
