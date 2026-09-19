@@ -95,9 +95,6 @@
             from { background-position: 0 0, 0 0, 0 0; }
             to { background-position: 42px 42px, 42px 42px, 42px 42px; }
         }
-        @media (prefers-reduced-motion: reduce) {
-            .vertex-grid { animation: none; }
-        }
 
         .font-display { font-family: '"Space Grotesk"', system-ui, sans-serif; }
 
@@ -143,15 +140,94 @@
         body.content-ready .asset-card.animate__animated {
             animation-play-state: running;
         }
+
+        /* ============================================================
+           FIX WINDOWS 10 — prefers-reduced-motion
+           Windows 10 activa "reduce animations" a nivel de sistema en
+           muchos equipos (portátiles con batería, gráficos integrados,
+           o simplemente por preferencia del usuario). Eso dispara
+           prefers-reduced-motion:reduce en TODOS los navegadores, y:
+             - animate.css 4.1.1 deja sus animaciones en 1ms (cards y
+               secciones del admin).
+             - Nuestros bloques propios apagaban la rejilla y la cortina.
+           Todo lo de esta app es decoración sutil y breve, así que lo
+           reactivamos aquí. Este bloque va al final del <style>, por lo
+           tanto gana por orden de aparición frente al de animate.css
+           (misma especificidad, pero posterior en la cascada).
+           ============================================================ */
         @media (prefers-reduced-motion: reduce) {
-            #loadCurtain { transition: none; }
+
+            /* Deshace el "1ms" que mete animate.css por su cuenta */
+            .animate__animated {
+                animation-duration: 1s !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.35s !important;
+            }
+
+            /* Las cards llevan 0.4s por inline style; preservamos ese valor */
+            .asset-card.animate__animated {
+                animation-duration: 0.4s !important;
+            }
+
+            /* Rejilla del header: vuelve a moverse (26s, ya era sutil) */
+            .vertex-grid {
+                animation: gridDrift 26s linear infinite !important;
+            }
+
+            /* Cortina de carga */
+            #loadCurtain {
+                transition: opacity .5s ease, visibility .5s ease !important;
+            }
+            #loadBar {
+                transition: width .25s ease-out !important;
+            }
+
+            /* Puntos verdes "publicación en vivo" (Tailwind animate-pulse) */
+            .animate-pulse {
+                animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite !important;
+            }
+            @keyframes pulse {
+                0%, 100% { opacity: 1; }
+                50% { opacity: .5; }
+            }
+
+            /* Icono del botón descarga */
+            .download-icon-pulse {
+                animation: downloadPulse 0.9s ease-in-out infinite !important;
+            }
+
+            /* Toasts de notificación */
+            .toast-in  { animation: toastIn  0.4s cubic-bezier(.22,1,.36,1) forwards !important; }
+            .toast-out { animation: toastOut 0.3s ease forwards !important; }
+
+            /* Cambio de slide en el detalle del asset */
+            .fade-anim { animation: imageFade 0.4s ease-in-out !important; }
+            @keyframes imageFade {
+                from { opacity: 0.4; }
+                to { opacity: 1; }
+            }
+        }
+
+        /* --- Micro-feedback de hover: fuera del @media para que sobreviva
+           incluso si Windows tiene "reduce animations" activo. --- */
+        .asset-card {
+            transition: transform .35s cubic-bezier(.22,1,.36,1),
+                        border-color .25s ease,
+                        box-shadow .35s ease !important;
+        }
+        .asset-card:hover {
+            transform: translateY(-6px) !important;
+            box-shadow: 0 20px 45px -20px rgba(37, 99, 235, 0.55) !important;
+        }
+        .asset-card:hover img,
+        .asset-card:hover .lazy-media {
+            transform: scale(1.07) !important;
         }
     </style>
 </head>
 <body class="bg-[#0b0e14] text-white min-h-screen">
 
-    <!-- Cortina de carga: se oculta cuando la página termina de cargar
-         (window 'load') y libera las animaciones de las cards. -->
+    <!-- Cortina de carga -->
     <div id="loadCurtain">
         <div class="font-display text-2xl font-bold tracking-tight text-blue-500">CORE<span class="text-white">ASSETS</span></div>
         <div id="loadBarTrack"><div id="loadBar"></div></div>
@@ -166,9 +242,6 @@
             var progress = 0;
             var done = false;
 
-            // Fake progress that eases toward 90% while real resources load,
-            // so the bar always feels alive even though we can't know the
-            // true percentage (external CDNs, fonts, lazy images, etc).
             var fakeInterval = setInterval(function () {
                 progress += (90 - progress) * 0.12;
                 bar.style.width = Math.min(progress, 90).toFixed(1) + '%';
@@ -182,20 +255,10 @@
                 setTimeout(function () {
                     curtain.classList.add('curtain-hide');
 
-                    // Fuerza al navegador a pintar el estado "paused" de cada
-                    // card antes de soltarlo. En algunos Chromium sobre
-                    // Windows 10 (rutas de aceleración por GPU distintas),
-                    // si el cambio a play-state:running llega en el mismo
-                    // frame que la clase, la animación no llega a
-                    // reproducirse y salta directo a su estado final —
-                    // por eso las cards aparecían "de golpe".
                     document.querySelectorAll('.asset-card.animate__animated').forEach(function (card) {
-                        void card.offsetWidth; // fuerza reflow del estado pausado
+                        void card.offsetWidth;
                     });
 
-                    // Se activa recién en el siguiente frame de pintado (doble
-                    // rAF), para asegurar que el navegador ya registró el
-                    // estado pausado antes de pasar a running.
                     requestAnimationFrame(function () {
                         requestAnimationFrame(function () {
                             document.body.classList.add('content-ready');
@@ -211,8 +274,6 @@
             } else {
                 window.addEventListener('load', finishLoading);
             }
-            // Red de seguridad: si algún recurso externo se cuelga, no dejamos
-            // la cortina puesta para siempre.
             setTimeout(finishLoading, 6000);
         })();
     </script>
@@ -289,7 +350,7 @@
         </footer>
     </div>
 
-    <!-- Modal de detalles del asset: enfoca el contenido y desenfoca el fondo -->
+    <!-- Modal de detalles del asset -->
     <div id="assetModalOverlay" class="fixed inset-0 z-50 hidden">
         <div id="assetModalBackdrop" class="absolute inset-0 bg-black/60 opacity-0" onclick="closeAssetDetail()"></div>
         <div class="relative z-10 h-full overflow-y-auto flex justify-center px-4 py-10 md:py-16">
