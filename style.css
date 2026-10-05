@@ -1,0 +1,345 @@
+/* ============================================================================
+   CoreAssets — shared styles
+   ----------------------------------------------------------------------------
+   Loaded by BOTH index.html and admin.html.
+   Only styles that are (a) shared between the two pages, or (b) public-page
+   specific but would be too verbose as inline Tailwind classes, live here.
+   Everything else is Tailwind utility classes inline in the HTML.
+   ============================================================================ */
+
+/* --- Design tokens (single source of truth for colors used in raw CSS) --- */
+:root {
+    --bg-page:       #0b0e14;
+    --accent:        #2563eb;
+    --accent-hover:  #3b82f6;
+    --accent-glow:   rgba(37, 99, 235, 0.55);
+    --border-subtle: rgba(255, 255, 255, 0.05);
+}
+
+/* --- Fonts ---------------------------------------------------------------- */
+.font-display { font-family: 'Space Grotesk', system-ui, sans-serif; }
+.font-mono    { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+/* --- Scrollbar (dark theme, consistent across pages) ---------------------- */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: #1e3a5f #0b0e14;
+}
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: #0b0e14; }
+::-webkit-scrollbar-thumb {
+    background-color: #1e3a5f;
+    border-radius: 10px;
+    border: 2px solid #0b0e14;
+    transition: background-color .2s ease;
+}
+::-webkit-scrollbar-thumb:hover { background-color: #3b82f6; }
+::-webkit-scrollbar-corner { background: #0b0e14; }
+
+/* --- Noscript banner (visible only when JS is disabled) ------------------- */
+#noscriptBanner { display: none; }
+html.no-js #noscriptBanner { display: block; }
+/* (index.html / admin.html add class="no-js" to <html> and a tiny inline
+   script strips it — this is the standard trick to make <noscript> styleable
+   without inline styles inside the <noscript> tag itself.) */
+
+/* --- Shared keyframes / animations ---------------------------------------- */
+
+@keyframes downloadPulse {
+    0%, 100% { transform: translateY(0);  opacity: 1; }
+    50%      { transform: translateY(3px); opacity: .55; }
+}
+.download-icon-pulse {
+    display: inline-block;
+    animation: downloadPulse .9s ease-in-out infinite;
+}
+
+@keyframes toastIn {
+    0%   { opacity: 0; transform: translateX(40px) scale(.9); }
+    60%  { opacity: 1; transform: translateX(-4px) scale(1.02); }
+    100% { opacity: 1; transform: translateX(0)   scale(1); }
+}
+@keyframes toastOut {
+    0%   { opacity: 1; transform: translateX(0)    scale(1); }
+    100% { opacity: 0; transform: translateX(30px) scale(.95); }
+}
+.toast-in  { animation: toastIn  .4s cubic-bezier(.22,1,.36,1) forwards; }
+.toast-out { animation: toastOut .3s ease forwards; }
+
+@keyframes imageFade {
+    from { opacity: .4; }
+    to   { opacity: 1; }
+}
+.fade-anim { animation: imageFade .4s ease-in-out; }
+
+/* ============================================================================
+   Public page (index.html)
+   ============================================================================ */
+
+/* --- Status badges on asset cards --- */
+.badge-novo        { background: #10b981; }
+.badge-limitado    { background: #f59e0b; }
+.badge-recomendado { background: #8b5cf6; }
+
+/* --- Card hover reveals the shortcut buttons --- */
+.asset-card:hover .shortcut-btn {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* --- Grid + detail-modal transitions --- */
+#assetGrid {
+    transition: opacity .22s ease, transform .22s ease;
+}
+#assetGrid.grid-fade-out {
+    opacity: 0;
+    transform: translateY(10px);
+}
+
+#pageWrapper {
+    transition: filter .35s ease, transform .35s ease;
+}
+#pageWrapper.page-blurred {
+    filter: blur(6px) brightness(.6);
+    transform: scale(.985);
+    pointer-events: none;
+}
+
+#assetModalOverlay  { transition: background-color .35s ease; }
+#assetModalBackdrop { transition: opacity .35s ease; }
+#assetModalContent  { transition: opacity .35s cubic-bezier(.22,1,.36,1),
+                                  transform .35s cubic-bezier(.22,1,.36,1); }
+
+/* --- Lazy-loaded media (grid card backgrounds) --- */
+.lazy-media { transition: background-image .2s ease; }
+
+/* --- Rating stars --- */
+.rate-star {
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 0;
+}
+.rate-star:focus { outline: none; }
+
+/* --- Card hover micro-feedback (kept outside @media so it survives even
+       if Windows has "reduce animations" active — well, mostly: the
+       @media block below explicitly disables it when the user prefers
+       reduced motion.) --- */
+.asset-card {
+    transition: transform .35s cubic-bezier(.22,1,.36,1),
+                border-color .25s ease,
+                box-shadow .35s ease;
+}
+.asset-card:hover {
+    transform: translateY(-6px);
+    box-shadow: 0 20px 45px -20px var(--accent-glow);
+}
+.asset-card:hover img,
+.asset-card:hover .lazy-media {
+    transform: scale(1.07);
+}
+
+/* --- Signature element: faint vertex/wireframe grid, evoking the 3D mesh
+       data this whole library exists to host. Pure CSS, two layered
+       gradients (lines + intersection dots) with a slow drift. --- */
+.vertex-grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(rgba(59,130,246,.10) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(59,130,246,.10) 1px, transparent 1px),
+        radial-gradient(rgba(56,189,248,.35) 1px, transparent 1.4px);
+    background-size: 42px 42px, 42px 42px, 42px 42px;
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 90%);
+    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 90%);
+    animation: gridDrift 26s linear infinite;
+}
+@keyframes gridDrift {
+    from { background-position: 0 0,     0 0,     0 0; }
+    to   { background-position: 42px 42px, 42px 42px, 42px 42px; }
+}
+
+/* --- Loading curtain --- */
+#loadCurtain {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: var(--bg-page);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    transition: opacity .5s ease, visibility .5s ease;
+}
+#loadCurtain.curtain-hide {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+#loadBarTrack {
+    width: 220px;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.08);
+    overflow: hidden;
+}
+#loadBar {
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), #38bdf8);
+    transition: width .25s ease-out;
+}
+/* Cards stay frozen on their first animation frame (opacity 0) until the
+   curtain lifts and adds .content-ready to <body>. */
+.asset-card.animate__animated { animation-play-state: paused; }
+body.content-ready .asset-card.animate__animated { animation-play-state: running; }
+
+/* --- Search bar (index.html only) ---------------------------------------- */
+#searchWrapper {
+    position: relative;
+    width: 100%;
+    max-width: 340px;
+}
+#searchInput {
+    width: 100%;
+    background: rgba(0,0,0,.4);
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    padding: 10px 42px 10px 18px;
+    color: #fff;
+    font-size: 13px;
+    outline: none;
+    transition: border-color .2s ease;
+}
+#searchInput::placeholder { color: #64748b; }
+#searchInput:focus        { border-color: var(--accent); }
+
+#searchClear {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 24px;
+    height: 24px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.06);
+    color: #94a3b8;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    display: none;
+    align-items: center;
+    justify-content: center;
+}
+#searchWrapper.has-value #searchClear { display: flex; }
+#searchClear:hover { color: #fff; background: rgba(255,255,255,.12); }
+
+/* --- Skeleton loading state (index.html, while KV is fetching) ----------- */
+@keyframes skeletonPulse {
+    0%, 100% { opacity: .55; }
+    50%      { opacity: .25; }
+}
+.skeleton-card {
+    background: #0f1520;
+    border: 1px solid var(--border-subtle);
+    border-radius: 24px;
+    overflow: hidden;
+    animation: skeletonPulse 1.4s ease-in-out infinite;
+}
+.skeleton-card .skeleton-media {
+    height: 208px;
+    background: rgba(255,255,255,.04);
+}
+.skeleton-card .skeleton-line {
+    height: 12px;
+    margin: 14px 22px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.06);
+}
+.skeleton-card .skeleton-line.short { width: 45%; }
+
+/* --- Inline error banner (index.html, network failure) ------------------- */
+#errorBanner {
+    display: none;
+    background: rgba(239,68,68,.08);
+    border: 1px solid rgba(239,68,68,.25);
+    color: #fca5a5;
+    border-radius: 14px;
+    padding: 12px 18px;
+    font-size: 13px;
+    margin-bottom: 20px;
+    gap: 10px;
+    align-items: center;
+}
+#errorBanner.show { display: flex; }
+#errorBanner button {
+    margin-left: auto;
+    background: transparent;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    opacity: .7;
+}
+#errorBanner button:hover { opacity: 1; }
+
+/* ============================================================================
+   Accessibility: prefers-reduced-motion
+   ----------------------------------------------------------------------------
+   Windows 10 (and some macOS/Linux setups) can enable "reduce motion" at
+   the OS level, which triggers prefers-reduced-motion: reduce in every
+   browser. That:
+     - collapses animate.css 4.1.1 animations to 1ms,
+     - turns off our own decorative animations.
+   Decision: everything here is subtle, brief decoration (a slow grid
+   drift, a card fade, a toast sliding in). None of it is large-scale
+   motion that triggers vestibular discomfort. So we KEEP the light
+   feedback (toasts, pulse, downloads, image cross-fades) and DROP the two
+   heavier elements:
+     - the vertex-grid drift on the header
+     - the asset-card hover lift
+   This block MUST come after animate.css in the cascade so it wins on
+   equal specificity.
+   ============================================================================ */
+@media (prefers-reduced-motion: reduce) {
+    /* Undo animate.css's 1ms collapse */
+    .animate__animated {
+        animation-duration: 1s !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .35s !important;
+    }
+    .asset-card.animate__animated { animation-duration: .4s !important; }
+
+    /* Respect the user's preference on the two heavier decorations */
+    .vertex-grid { animation: none !important; }
+    .asset-card:hover { transform: none !important; }
+    .asset-card:hover img,
+    .asset-card:hover .lazy-media { transform: none !important; }
+
+    /* Shorten the loading curtain to a quick fade */
+    #loadCurtain { transition: opacity .2s ease, visibility .2s ease !important; }
+    #loadBar     { transition: width .15s ease-out !important; }
+
+    /* Keep the short, informative feedback animations alive */
+    .animate-pulse {
+        animation: pulse 2s cubic-bezier(.4,0,.6,1) infinite !important;
+    }
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50%      { opacity: .5; }
+    }
+    .download-icon-pulse {
+        animation: downloadPulse .9s ease-in-out infinite !important;
+    }
+    .toast-in  { animation: toastIn  .4s cubic-bezier(.22,1,.36,1) forwards !important; }
+    .toast-out { animation: toastOut .3s ease forwards !important; }
+    .fade-anim { animation: imageFade .4s ease-in-out !important; }
+
+    /* Skeletons should still read as "loading", just softer */
+    .skeleton-card { animation-duration: 2.4s !important; }
+}
