@@ -1,20 +1,15 @@
 const WORKER_URL = 'https://coreassets-admin.normal8607.workers.dev';
 
-// --- Security: escape any untrusted string before it goes into innerHTML.
-// Used for asset titles/descriptions (can come from public pending submissions)
-// and for comments/usernames (always public input). Never skip this for
-// anything that did not originate from a trusted hardcoded template.
 function escapeHTML(str) {
     return String(str == null ? '' : str)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+        .replace(/'/g, '&#39;')
+        .replace(/`/g, '&#96;');
 }
 
-// --- Performance: generic debounce helper, used to avoid firing a network
-// request or a re-render on every single keystroke/click.
 function debounce(fn, wait = 250) {
     let t = null;
     return (...args) => {
@@ -38,7 +33,9 @@ function saveAdminPass(pass) {
 function forgetAdminPass() {
     try { localStorage.removeItem(ADMIN_PASS_KEY); }
     catch (e) {  }
-    showNotify("Saved password forgotten.");
+    clearSessionToken();
+    showNotify("Saved password forgotten. Session closed.");
+    if (document.getElementById('adminContent')) location.href = 'admin.html';
 }
 
 function getSessionToken() {
@@ -119,7 +116,12 @@ function toFileFormat(a) {
     };
 }
 
-let assets = (typeof assetsCreados !== 'undefined' ? assetsCreados : []).map(fromFileFormat);
+// Assets now live ONLY in KV — no more Vyn-assets.js file, no more
+// GitHub-commit-on-publish. This array is filled exclusively by
+// refreshAssetsFromKV(), which hits GET /assets on the Worker.
+let assets = [];
+let __kvLoaded = false;
+
 let pendingAssets = [];
 let assetToDelete = null;
 let assetToDeleteSource = 'admin';
@@ -133,15 +135,31 @@ function setFileStatus(connected, label) {
     text.innerText = label;
 }
 
-function generateAssetsFileContent(assetsArr) {
-    const data = assetsArr.map(toFileFormat);
-    return "var assetsCreados = " + JSON.stringify(data, null, 4) + ";\n";
-}
-
+// Rewrites the entire published list in KV. The Worker diffs old vs new to
+// enforce ownership rules server-side, so a failed save (403) here means the
+// caller doesn't own one of the changed assets.
 async function persistAssets() {
-    const content = generateAssetsFileContent(assets);
-    await workerSave('/save-assets', content, 'Update assets from admin panel');
+    const token = getSessionToken();
+    if (!token) throw new Error('Sesión no iniciada');
+    const res = await fetch(`${WORKER_URL}/save-assets`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+            assets: assets.map(toFileFormat),
+            message: 'Update assets from admin panel'
+        })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+        clearSessionToken();
+        throw new Error('Sesión expirada, vuelve a iniciar sesión.');
+    }
+    if (!res.ok) throw new Error(data.error || `Error del servidor (${res.status})`);
     setFileStatus(true, 'Publicado ✔️');
+    return data;
 }
 
 // pendingQueue keeps the raw server records ({ id, asset, submittedBy, submittedAt })
@@ -244,6 +262,9 @@ function getCurrentUsername() {
     return (current && current.usuario) ? current.usuario : 'Admin';
 }
 
+// Users are STILL written to Vyn-users.js on GitHub (Vyn-body.js and this
+// file are the only two files the Worker commits now). Assets do not touch
+// GitHub anymore — they go straight to KV via persistAssets().
 function generateUsersFileContent(usersArr) {
     return "var adminUsers = " + JSON.stringify(usersArr, null, 4) + ";\n";
 }
@@ -253,7 +274,10 @@ async function persistUsers() {
     await workerSave('/save-users', content, 'Update admin users');
 }
 
-const allAssets = [...assets];
+// In-memory view used by the public gallery (index.html) and by the admin
+// stats. Kept as a separate array so filters can operate on a stable list
+// even while `assets` gets reassigned by refreshAssetsFromKV().
+const allAssets = [];
 
 // assetId -> { comments, rating, downloads }. Declared here (before the
 // first renderAssetGrid() runs at the bottom of this file) on purpose: a
@@ -374,17 +398,17 @@ function renderMedia(url, sizeClasses, extraClasses = '', interactive = false, l
     }
 
     if (/\.(mp4|webm|ogg)(\?.*)?$/i.test(url)) {
-        return `<video class="${sizeClasses} ${extraClasses} object-cover" src="${url}" autoplay muted loop playsinline ${interactive ? 'controls' : ''}></video>`;
+        return `<video class="${sizeClasses} ${extraClasses} object-cover" src="${escapeHTML(url)}" autoplay muted loop playsinline ${interactive ? 'controls' : ''}></video>`;
     }
 
     // Perf: grid cards defer loading their background image until they are
     // about to enter the viewport (see initLazyMedia), instead of every
     // card's image downloading immediately on page load.
     if (lazy) {
-        return `<div class="${sizeClasses} ${extraClasses} bg-cover bg-center lazy-media bg-slate-800" data-bg-url="${url.replace(/"/g, '&quot;')}"></div>`;
+        return `<div class="${sizeClasses} ${extraClasses} bg-cover bg-center lazy-media bg-slate-800" data-bg-url="${escapeHTML(url)}"></div>`;
     }
 
-    return `<div class="${sizeClasses} ${extraClasses} bg-cover bg-center" style="background-image: url('${url}')"></div>`;
+    return `<div class="${sizeClasses} ${extraClasses} bg-cover bg-center" style="background-image: url('${escapeHTML(url)}')"></div>`;
 }
 
 // --- Performance: single shared IntersectionObserver reused for every grid
@@ -426,7 +450,7 @@ function showNotify(text, type = 'success') {
     };
     const s = styles[type] || styles.success;
     toast.className = `${s.color} text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 toast-in mb-2 font-bold z-50`;
-    toast.innerHTML = `<span>${text}</span>`;
+    toast.innerHTML = `<span>${escapeHTML(text)}</span>`;
     container.appendChild(toast);
     setTimeout(() => {
         toast.classList.remove('toast-in');
@@ -698,7 +722,7 @@ function addImageField(value = '') {
     const row = document.createElement('div');
     row.className = 'flex gap-2';
     row.innerHTML = `
-        <input type="text" value="${value ? value.replace(/"/g, '&quot;') : ''}" placeholder="https://i.postimg.cc/..." class="asset-img-field flex-1 bg-black/50 p-4 rounded-xl border border-white/5 outline-none focus:border-blue-500">
+        <input type="text" value="${value ? escapeHTML(value) : ''}" placeholder="https://i.postimg.cc/..." class="asset-img-field flex-1 bg-black/50 p-4 rounded-xl border border-white/5 outline-none focus:border-blue-500">
         <button type="button" onclick="this.parentElement.remove()" class="bg-red-600/10 text-red-500 hover:bg-red-600 hover:text-white transition px-4 rounded-xl font-bold">✕</button>
     `;
     list.appendChild(row);
@@ -826,7 +850,10 @@ function renderAssetGrid() {
     itemsFiltrados.sort((a, b) => prioridadCategoria(a) - prioridadCategoria(b));
 
     if (itemsFiltrados.length === 0) {
-        grid.innerHTML = `<p class="col-span-full text-center text-slate-500 py-16">No items found in this category.</p>`;
+        const msg = __kvLoaded
+            ? 'No items found in this category.'
+            : 'Cargando assets…';
+        grid.innerHTML = `<p class="col-span-full text-center text-slate-500 py-16">${msg}</p>`;
         return;
     }
 
@@ -851,20 +878,20 @@ function renderAssetGrid() {
         return `
             <div class="asset-card relative bg-slate-900 border border-white/5 rounded-3xl overflow-hidden group hover:border-blue-500 transition-all duration-300 animate__animated animate__fadeInUp" style="animation-delay:${delayMs}ms; animation-duration:0.4s;">
                 ${badge}
-                <button onclick="event.stopPropagation(); handleDownload('${a.id}')" class="shortcut-btn absolute top-4 right-4 bg-blue-600 p-3 rounded-xl z-20 opacity-0 translate-y-[-10px] transition-all hover:bg-blue-500 shadow-xl">
+                <button onclick="event.stopPropagation(); handleDownload('${escapeHTML(a.id)}')" class="shortcut-btn absolute top-4 right-4 bg-blue-600 p-3 rounded-xl z-20 opacity-0 translate-y-[-10px] transition-all hover:bg-blue-500 shadow-xl">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
                 </button>
-                <button onclick="event.stopPropagation(); toggleFavorite('${a.id}')" data-id="${a.id}" data-context="grid" class="fav-btn shortcut-btn absolute top-16 right-4 w-9 h-9 flex items-center justify-center bg-slate-950/80 rounded-xl z-20 opacity-0 translate-y-[-10px] transition-all hover:bg-slate-900 shadow-xl">
+                <button onclick="event.stopPropagation(); toggleFavorite('${escapeHTML(a.id)}')" data-id="${escapeHTML(a.id)}" data-context="grid" class="fav-btn shortcut-btn absolute top-16 right-4 w-9 h-9 flex items-center justify-center bg-slate-950/80 rounded-xl z-20 opacity-0 translate-y-[-10px] transition-all hover:bg-slate-900 shadow-xl">
                     <svg class="fav-icon" width="16" height="16" viewBox="0 0 24 24" fill="${isFavorite(a.id) ? '#ef4444' : 'none'}" stroke="${isFavorite(a.id) ? '#ef4444' : '#ffffff'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.7-4.35-9.3-8.28C1.1 10.3 1.7 6.9 4.6 5.4c2.4-1.24 5-.3 6.4 1.7 1.4-2 4-2.94 6.4-1.7 2.9 1.5 3.5 4.9 1.9 7.32C18.7 16.65 12 21 12 21z"/></svg>
                 </button>
-                <div onclick="openAssetDetail('${a.id}')" class="cursor-pointer">
+                <div onclick="openAssetDetail('${escapeHTML(a.id)}')" class="cursor-pointer">
                     ${renderMedia(a.img, 'h-52 w-full', 'transition-transform duration-500 group-hover:scale-110', false, true)}
                     <div class="p-6">
                         <h3 class="font-display text-xl font-bold mb-2 transition-colors">${escapeHTML(a.title)}</h3>
                         <p class="text-slate-500 text-sm line-clamp-2">${escapeHTML(a.descShort || a.desc || 'Click to see details.')}</p>
                         <div class="flex items-center gap-2 mt-3 text-[11px] text-slate-500 font-mono">
-                            <span class="asset-rating-summary" data-asset-id="${a.id}">☆☆☆☆☆</span>
-                            <span class="asset-download-count" data-asset-id="${a.id}"></span>
+                            <span class="asset-rating-summary" data-asset-id="${escapeHTML(a.id)}">☆☆☆☆☆</span>
+                            <span class="asset-download-count" data-asset-id="${escapeHTML(a.id)}"></span>
                         </div>
                         ${fileMeta}
                     </div>
@@ -923,7 +950,7 @@ function buildAssetDetailHTML(a) {
                 <div class="flex justify-between items-center mb-6 gap-3">
                     <h1 class="font-display text-4xl font-bold">${escapeHTML(a.title)}</h1>
                     <div class="flex items-center gap-2 shrink-0">
-                        <button onclick="toggleFavorite('${a.id}')" data-id="${a.id}" data-context="modal" class="fav-btn bg-black/20 border border-white/5 hover:bg-slate-800 w-11 h-11 flex items-center justify-center rounded-xl transition">
+                        <button onclick="toggleFavorite('${escapeHTML(a.id)}')" data-id="${escapeHTML(a.id)}" data-context="modal" class="fav-btn bg-black/20 border border-white/5 hover:bg-slate-800 w-11 h-11 flex items-center justify-center rounded-xl transition">
                             <svg class="fav-icon" width="18" height="18" viewBox="0 0 24 24" fill="${isFavorite(a.id) ? '#ef4444' : 'none'}" stroke="${isFavorite(a.id) ? '#ef4444' : '#ffffff'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.7-4.35-9.3-8.28C1.1 10.3 1.7 6.9 4.6 5.4c2.4-1.24 5-.3 6.4 1.7 1.4-2 4-2.94 6.4-1.7 2.9 1.5 3.5 4.9 1.9 7.32C18.7 16.65 12 21 12 21z"/></svg>
                         </button>
                         <span class="font-mono px-4 py-2 rounded-full text-[10px] font-black uppercase bg-blue-600/20 text-blue-400 border border-blue-500/20">${escapeHTML(label)}</span>
@@ -944,7 +971,7 @@ function buildAssetDetailHTML(a) {
                     <h3 class="font-display text-blue-500 font-bold mb-2 uppercase text-xs tracking-wide">Description</h3>
                     <p class="text-slate-300 leading-relaxed whitespace-pre-line">${escapeHTML(a.desc || 'No technical description available.')}</p>
                 </div>
-                <button onclick="handleDownload('${a.id}')" class="w-full bg-blue-600 py-6 rounded-2xl font-black text-2xl hover:bg-blue-500 transition shadow-xl shadow-blue-900/30">
+                <button onclick="handleDownload('${escapeHTML(a.id)}')" class="w-full bg-blue-600 py-6 rounded-2xl font-black text-2xl hover:bg-blue-500 transition shadow-xl shadow-blue-900/30">
                     DOWNLOAD
                 </button>
 
@@ -952,7 +979,7 @@ function buildAssetDetailHTML(a) {
                     <h3 class="font-display text-blue-500 font-bold mb-4 uppercase text-xs tracking-wide">Comentarios</h3>
                     <div class="flex gap-3 mb-5">
                         <input type="text" id="commentInput-${a.id}" maxlength="500" placeholder="Escribe un comentario..." class="flex-1 bg-black/40 p-4 rounded-xl border border-white/5 outline-none focus:border-blue-500 text-sm">
-                        <button id="commentBtn-${a.id}" onclick="submitComment('${a.id}')" class="bg-blue-600 hover:bg-blue-500 px-5 rounded-xl font-bold text-sm transition">Enviar</button>
+                        <button id="commentBtn-${a.id}" onclick="submitComment('${escapeHTML(a.id)}')" class="bg-blue-600 hover:bg-blue-500 px-5 rounded-xl font-bold text-sm transition">Enviar</button>
                     </div>
                     <div id="commentsList-${a.id}" class="space-y-3">
                         <p class="text-slate-500 text-sm">Cargando comentarios…</p>
@@ -1059,6 +1086,7 @@ function resetForm() {
 
 function handleDownload(id) {
     const a = allAssets.find(x => x.id == id);
+    if (!a) return;
     if (a.fail === 'none') {
         window.open(a.fileUrl, '_blank');
         trackDownload(id); // fire-and-forget, never blocks the actual download
@@ -1123,7 +1151,7 @@ function renderRatingWidget(id) {
     try { myRating = parseInt(localStorage.getItem(myKey) || '0', 10) || 0; } catch (e) { }
 
     const starButtons = [1, 2, 3, 4, 5].map(n => `
-        <button type="button" onclick="submitRating('${id}', ${n})" class="rate-star text-2xl leading-none ${n <= myRating ? 'text-yellow-500' : 'text-slate-600'} hover:text-yellow-400 transition" data-n="${n}">★</button>
+        <button type="button" onclick="submitRating('${escapeHTML(id)}', ${n})" class="rate-star text-2xl leading-none ${n <= myRating ? 'text-yellow-500' : 'text-slate-600'} hover:text-yellow-400 transition" data-n="${n}">★</button>
     `).join('');
 
     el.innerHTML = `
@@ -1181,7 +1209,7 @@ function formatCommentDate(iso) {
     try {
         const d = new Date(iso);
         if (isNaN(d.getTime())) return '';
-        return d.toLocaleDateString();
+        return d.toLocaleDateString('es-ES');
     } catch (e) { return ''; }
 }
 
@@ -1283,7 +1311,7 @@ async function renderCommentsModeration() {
             const asset = allAssets.find(x => x.id == c.assetId);
             const assetTitle = asset ? asset.title : `Asset #${c.assetId}`;
             const deleteBtn = vyn
-                ? `<button onclick="deleteCommentAdmin('${c.assetId}', '${c.id}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase shrink-0">Delete</button>`
+                ? `<button onclick="deleteCommentAdmin('${escapeHTML(c.assetId)}', '${escapeHTML(c.id)}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase shrink-0">Delete</button>`
                 : '';
             return `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
@@ -1318,10 +1346,13 @@ function renderManageList() {
     const l = document.getElementById('existingAssetsList');
     if(!l) return;
     const combined = assets.map(a => ({ ...a, __source: 'admin' }));
-    l.innerHTML = combined.length ? "" : "<p class='text-slate-500 text-center py-10'>Empty.</p>";
+    if (!combined.length) {
+        l.innerHTML = "<p class='text-slate-500 text-center py-10'>Empty.</p>";
+        return;
+    }
     const myUsername = getCurrentUsername().trim().toLowerCase();
     const vyn = isCurrentUserVyn();
-    combined.forEach(a => {
+    const html = combined.map(a => {
         const tag = `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">${escapeHTML(a.autor || 'Admin')}</span>`;
         // UX-only gate: hides/disables the button for non-owners so the panel
         // doesn't invite an action that will just get rejected. The real
@@ -1329,15 +1360,15 @@ function renderManageList() {
         // this check alone can be bypassed from the browser.
         const isOwner = vyn || (a.autor || '').trim().toLowerCase() === myUsername;
         const editBtn = isOwner
-            ? `<button onclick="prepareEdit('${a.id}', '${a.__source}')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>`
+            ? `<button onclick="prepareEdit('${escapeHTML(a.id)}', '${escapeHTML(a.__source)}')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>`
             : `<button disabled title="Solo el dueño de este asset (o Vyn) puede editarlo" class="bg-slate-800 text-slate-600 px-4 py-2 rounded-xl text-xs font-bold uppercase cursor-not-allowed">Edit</button>`;
         const deleteBtn = isOwner
-            ? `<button onclick="openDeleteModal('${a.id}', '${a.__source}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Delete</button>`
+            ? `<button onclick="openDeleteModal('${escapeHTML(a.id)}', '${escapeHTML(a.__source)}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Delete</button>`
             : `<button disabled title="Solo el dueño de este asset (o Vyn) puede eliminarlo" class="bg-slate-800 text-slate-600 px-4 py-2 rounded-xl text-xs font-bold uppercase cursor-not-allowed">Delete</button>`;
-        l.innerHTML += `
+        return `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
                 <div class="flex items-center gap-4">
-                    <img src="${escapeHTML(a.img)}" class="w-12 h-12 rounded-lg object-cover border border-white/10">
+                    <img src="${escapeHTML(a.img)}" alt="${escapeHTML(a.title)}" class="w-12 h-12 rounded-lg object-cover border border-white/10">
                     <div class="flex items-center gap-2">
                         <span class="font-bold text-sm">${escapeHTML(a.title)}</span>
                         ${tag}
@@ -1348,24 +1379,28 @@ function renderManageList() {
                     ${deleteBtn}
                 </div>
             </div>`;
-    });
+    }).join('');
+    l.innerHTML = html;
 }
 
 function renderPendingList() {
     const l = document.getElementById('pendingList');
     if (!l) return;
-    l.innerHTML = pendingAssets.length ? "" : "<p class='text-slate-500 text-center py-10'>No hay assets pendientes de revisión.</p>";
+    if (!pendingAssets.length) {
+        l.innerHTML = "<p class='text-slate-500 text-center py-10'>No hay assets pendientes de revisión.</p>";
+        return;
+    }
     const myDeviceId = getDeviceId();
 
-    pendingAssets.forEach(a => {
+    const html = pendingAssets.map(a => {
         const record = pendingQueue.find(x => x.id == a.queueId);
         const isOwn = record && record.submittedBy === myDeviceId;
         const tag = `<span class="bg-yellow-600/20 text-yellow-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">${escapeHTML(a.autor || 'Admin')}</span>`;
 
-        l.innerHTML += `
+        return `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
                 <div class="flex items-center gap-4">
-                    <img src="${escapeHTML(a.img)}" class="w-12 h-12 rounded-lg object-cover border border-white/10">
+                    <img src="${escapeHTML(a.img)}" alt="${escapeHTML(a.title)}" class="w-12 h-12 rounded-lg object-cover border border-white/10">
                     <div class="flex items-center gap-2">
                         <span class="font-bold text-sm">${escapeHTML(a.title)}</span>
                         ${tag}
@@ -1373,18 +1408,15 @@ function renderPendingList() {
                     </div>
                 </div>
                 <div class="flex gap-2">
-                    <button onclick="prepareEdit('${a.queueId}', 'pending')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>
-                    <button onclick="approvePending('${a.queueId}')" ${isOwn ? 'disabled title="No puedes aprobar tu propia publicación"' : ''}
+                    <button onclick="prepareEdit('${escapeHTML(a.queueId)}', 'pending')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>
+                    <button onclick="approvePending('${escapeHTML(a.queueId)}')" ${isOwn ? 'disabled title="No puedes aprobar tu propia publicación"' : ''}
                         class="px-4 py-2 rounded-xl text-xs font-bold uppercase ${isOwn ? 'bg-slate-800 text-slate-600 cursor-not-allowed' : 'bg-green-600/10 text-green-500'}">Aprobar</button>
-                    <button onclick="openDeleteModal('${a.queueId}', 'pending')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">${isOwn ? 'Retirar' : 'Rechazar'}</button>
+                    <button onclick="openDeleteModal('${escapeHTML(a.queueId)}', 'pending')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">${isOwn ? 'Retirar' : 'Rechazar'}</button>
                 </div>
             </div>`;
-    });
+    }).join('');
+    l.innerHTML = html;
 }
-
-// The Worker independently verifies (against Vyn-users.js) that this device
-// belongs to Vyn, and rejects the call if this device is the submitter —
-// the client-side "isCurrentUserVyn()" gate below is just UX, not the real lock.
 async function approvePending(id) {
     try {
         await workerCall('/pending-approve', { id, deviceId: getDeviceId() });
@@ -1428,23 +1460,27 @@ function renderUsersList() {
     if (!l) return;
     const users = getAdminUsersList();
     const puedeEliminar = isCurrentUserVyn();
-    l.innerHTML = users.length ? "" : "<p class='text-slate-500 text-center py-10'>No hay usuarios registrados.</p>";
-    users.forEach(u => {
+    if (!users.length) {
+        l.innerHTML = "<p class='text-slate-500 text-center py-10'>No hay usuarios registrados.</p>";
+        return;
+    }
+    const html = users.map(u => {
         const protegido = isProtectedUser(u);
         const estadoTag = u.banned
             ? `<span class="bg-red-600/20 text-red-500 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Baneado</span>`
             : `<span class="bg-green-600/20 text-green-500 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Activo</span>`;
-        l.innerHTML += `
+        return `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
                 <div class="flex items-center gap-3">
                     <span class="font-bold text-sm">${escapeHTML(u.usuario)}</span>
                     ${protegido ? `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Creador</span>` : estadoTag}
                 </div>
                 <div class="flex gap-2">
-                    ${(!protegido && !u.banned && puedeEliminar) ? `<button onclick="openDeleteUserModal(${u.id})" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Eliminar</button>` : ''}
+                    ${(!protegido && !u.banned && puedeEliminar) ? `<button onclick="openDeleteUserModal(${escapeHTML(u.id)})" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Eliminar</button>` : ''}
                 </div>
             </div>`;
-    });
+    }).join('');
+    l.innerHTML = html;
 }
 
 let userToDelete = null;
@@ -1507,8 +1543,7 @@ document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () 
         const previousAssets = assets;
         assets = assets.filter(x => x.id != assetToDelete);
         try {
-            await workerSave('/save-assets', generateAssetsFileContent(assets), 'Update assets from admin panel');
-            setFileStatus(true, 'Publicado ✔️');
+            await persistAssets();          // KV-only now, no more Vyn-assets.js commit
             renderManageList();
             updateAdminStats();
             closeDeleteModal();
@@ -1524,9 +1559,6 @@ document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () 
     }
 });
 
-// Fast public read: pulls the KV-backed asset cache (kept in sync by
-// /save-assets and /pending-approve on the Worker) so publishes appear
-// almost immediately instead of waiting on the GitHub Pages rebuild.
 async function refreshAssetsFromKV() {
     try {
         const res = await fetch(`${WORKER_URL}/assets`);
@@ -1537,10 +1569,13 @@ async function refreshAssetsFromKV() {
         assets = data.items.map(fromFileFormat);
         allAssets.length = 0;
         allAssets.push(...assets);
+        __kvLoaded = true;
 
         if (document.getElementById('assetGrid')) { renderFilters(); renderAssetGrid(); updateHeroStats(); }
         if (document.getElementById('existingAssetsList') && !document.getElementById('sectionManage')?.classList.contains('hidden')) renderManageList();
-    } catch (e) {  }
+    } catch (e) {
+        __kvLoaded = true; // avoid infinite "Cargando…" on network error
+    }
 }
 if (document.getElementById('assetGrid') || document.getElementById('adminContent')) {
     refreshAssetsFromKV();
