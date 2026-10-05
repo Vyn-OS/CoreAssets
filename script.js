@@ -1,5 +1,14 @@
 const WORKER_URL = 'https://coreassets-admin.normal8607.workers.dev';
 
+// ============================================================================
+// UTILITIES
+// ============================================================================
+
+// Security: escape any untrusted string before it goes into innerHTML.
+// RULE: escape at the HTML-insertion point, never earlier. If a value is
+// escaped twice, `&` becomes `&amp;amp;`; if it's escaped nowhere, XSS.
+// Every value that did not originate from a hardcoded template string in
+// this file MUST pass through here right before being concatenated.
 function escapeHTML(str) {
     return String(str == null ? '' : str)
         .replace(/&/g, '&amp;')
@@ -10,6 +19,8 @@ function escapeHTML(str) {
         .replace(/`/g, '&#96;');
 }
 
+// Performance: generic debounce, used to avoid firing a network request or
+// a re-render on every single keystroke/click.
 function debounce(fn, wait = 250) {
     let t = null;
     return (...args) => {
@@ -18,25 +29,23 @@ function debounce(fn, wait = 250) {
     };
 }
 
-const ADMIN_PASS_KEY = 'coreassets_admin_pass';
-
-function getSavedAdminPass() {
-    try { return localStorage.getItem(ADMIN_PASS_KEY) || ''; }
-    catch (e) { return ''; }
+// UUID with fallback (file:// lacks crypto.randomUUID on some browsers).
+function newId() {
+    try {
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+    } catch (e) { /* fall through */ }
+    return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 }
 
-function saveAdminPass(pass) {
-    try { localStorage.setItem(ADMIN_PASS_KEY, pass); }
-    catch (e) {  }
-}
+// ============================================================================
+// SESSION & LOGIN
+// ============================================================================
 
-function forgetAdminPass() {
-    try { localStorage.removeItem(ADMIN_PASS_KEY); }
-    catch (e) {  }
-    clearSessionToken();
-    showNotify("Saved password forgotten. Session closed.");
-    if (document.getElementById('adminContent')) location.href = 'admin.html';
-}
+// The password is NEVER persisted. The session token (issued by the Worker,
+// 1h TTL, stored in sessionStorage) is what survives reloads. If the user
+// comes back after the token expired, they type the password once more.
+// This is the correct security posture: a stolen localStorage entry is
+// useless after the tab is closed.
 
 function getSessionToken() {
     return sessionStorage.getItem('admin_session');
@@ -57,10 +66,37 @@ async function workerLogin(password) {
         body: JSON.stringify({ password, deviceId: getDeviceId() })
     });
     const data = await res.json().catch(() => ({}));
+
+    // Server-side rate limit (see worker.js /login). Handle separately so
+    // the user sees "wait X seconds" instead of the generic wrong-password.
+    if (res.status === 429) {
+        throw new Error(data.error || 'Demasiados intentos. Espera un momento.');
+    }
     if (!res.ok) throw new Error(data.error || 'Login fallido');
     return data.token;
 }
 
+// Generalized authenticated POST used for most admin actions. The caller
+// supplies the endpoint and body; this handles the auth header, the 401
+// refresh, and error unwrapping in one place.
+async function workerCall(endpoint, body) {
+    const token = getSessionToken();
+    if (!token) throw new Error('Sesión no iniciada');
+    const res = await fetch(`${WORKER_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(body || {})
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+        clearSessionToken();
+        throw new Error('Sesión expirada, vuelve a iniciar sesión.');
+    }
+    if (!res.ok) throw new Error(data.error || `Error del servidor (${res.status})`);
+    return data;
+}
+
+// Older helper kept for /save-users (it still sends a full file's text).
 async function workerSave(endpoint, content, message) {
     const token = getSessionToken();
     if (!token) throw new Error('Sesión no iniciada');
@@ -81,145 +117,243 @@ async function workerSave(endpoint, content, message) {
     return data;
 }
 
-function fromFileFormat(m) {
-    return {
-        id: m.id,
-        title: m.nome,
-        desc: m.descricaoLonga || m.descricao || '',
-        descShort: m.descricao || (m.descricaoLonga || '').slice(0, 60),
-        fileUrl: m.linkDownload,
-        fileFormat: m.formato || '',
-        fileSize: m.tamanho || '',
-        categoria: Array.isArray(m.categoria) ? m.categoria : (m.categoria ? [m.categoria] : []),
-        imagenes: m.imagens || [],
-        img: (m.imagens && m.imagens[0]) || '',
-        status: m.status || 'nenhum',
-        fail: m.fail || 'none',
-        autor: m.autor || ''
-    };
+function forgetAdminPass() {
+    clearSessionToken();
+    showNotify("Sesión cerrada.");
+    if (document.getElementById('adminContent')) location.href = 'admin.html';
 }
 
-function toFileFormat(a) {
-    return {
-        id: a.id,
-        nome: a.title,
-        categoria: a.categoria || [],
-        descricao: (a.descShort || '').trim() || (a.desc || '').slice(0, 60),
-        descricaoLonga: a.desc || '',
-        imagens: a.imagenes || [],
-        linkDownload: a.fileUrl,
-        formato: a.fileFormat || '',
-        tamanho: a.fileSize || '',
-        status: a.status || 'nenhum',
-        fail: a.fail || 'none',
-        autor: a.autor || ''
-    };
-}
-
-// Assets now live ONLY in KV — no more Vyn-assets.js file, no more
-// GitHub-commit-on-publish. This array is filled exclusively by
-// refreshAssetsFromKV(), which hits GET /assets on the Worker.
-let assets = [];
-let __kvLoaded = false;
-
-let pendingAssets = [];
-let assetToDelete = null;
-let assetToDeleteSource = 'admin';
-
-function setFileStatus(connected, label) {
-    const dot = document.getElementById('fileStatusDot');
-    const text = document.getElementById('fileStatusText');
-    if (!dot || !text) return;
-    dot.classList.remove('bg-slate-600', 'bg-red-500', 'bg-green-500');
-    dot.classList.add(connected ? 'bg-green-500' : 'bg-red-500');
-    text.innerText = label;
-}
-
-// Rewrites the entire published list in KV. The Worker diffs old vs new to
-// enforce ownership rules server-side, so a failed save (403) here means the
-// caller doesn't own one of the changed assets.
-async function persistAssets() {
-    const token = getSessionToken();
-    if (!token) throw new Error('Sesión no iniciada');
-    const res = await fetch(`${WORKER_URL}/save-assets`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-            assets: assets.map(toFileFormat),
-            message: 'Update assets from admin panel'
-        })
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.status === 401) {
-        clearSessionToken();
-        throw new Error('Sesión expirada, vuelve a iniciar sesión.');
-    }
-    if (!res.ok) throw new Error(data.error || `Error del servidor (${res.status})`);
-    setFileStatus(true, 'Publicado ✔️');
+// --- Login-attempt brake (client-side, complements the Worker's own limit).
+// This is purely a UX deterrent against casual brute-forcing — the real
+// brake lives on the Worker, which counts by IP.
+const LOGIN_ATTEMPTS_KEY = 'coreassets_login_attempts';
+function registerFailedLoginAttempt() {
+    let data;
+    try { data = JSON.parse(sessionStorage.getItem(LOGIN_ATTEMPTS_KEY)) || { count: 0, until: 0 }; }
+    catch (e) { data = { count: 0, until: 0 }; }
+    data.count += 1;
+    if (data.count >= 5) data.until = Date.now() + 30000;
+    try { sessionStorage.setItem(LOGIN_ATTEMPTS_KEY, JSON.stringify(data)); } catch (e) { }
     return data;
 }
-
-// pendingQueue keeps the raw server records ({ id, asset, submittedBy, submittedAt })
-// so we always know who submitted each item — needed to block self-approval.
-let pendingQueue = [];
-
-async function workerCall(endpoint, body) {
-    const token = getSessionToken();
-    if (!token) throw new Error('Sesión no iniciada');
-    const res = await fetch(`${WORKER_URL}${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify(body || {})
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.status === 401) {
-        clearSessionToken();
-        throw new Error('Sesión expirada, vuelve a iniciar sesión.');
-    }
-    if (!res.ok) throw new Error(data.error || `Error del servidor (${res.status})`);
-    return data;
-}
-
-async function refreshPendingFromServer() {
-    const token = getSessionToken();
-    if (!token) return;
+function getLoginLockout() {
     try {
-        const res = await fetch(`${WORKER_URL}/pending-list`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && Array.isArray(data.items)) {
-            pendingQueue = data.items;
-            // The queue entry's own id (x.id, minted by the Worker at
-            // submission time) is what /pending-approve, /pending-reject and
-            // /pending-update expect. It is NOT the same as the wrapped
-            // asset's own id (x.asset.id, minted client-side when the form
-            // was first filled). Keep both: queueId for talking to the
-            // Worker, id for everything else (editing fields, images...).
-            pendingAssets = data.items.map(x => {
-                const a = fromFileFormat(x.asset);
-                a.queueId = x.id;
-                return a;
-            });
-        }
+        const data = JSON.parse(sessionStorage.getItem(LOGIN_ATTEMPTS_KEY)) || { count: 0, until: 0 };
+        return data.until > Date.now() ? data.until : 0;
+    } catch (e) { return 0; }
+}
+function clearLoginAttempts() {
+    try { sessionStorage.removeItem(LOGIN_ATTEMPTS_KEY); } catch (e) { }
+}
+
+async function login() {
+    const lockedUntil = getLoginLockout();
+    if (lockedUntil) {
+        showNotify(`Demasiados intentos. Espera ${Math.ceil((lockedUntil - Date.now()) / 1000)}s.`, "error");
+        return;
+    }
+    const input = document.getElementById('pass');
+    const pass = input ? input.value : '';
+    if (!pass) return;
+
+    try {
+        const token = await workerLogin(pass);
+        clearLoginAttempts();
+        setSessionToken(token);
+        await handlePostLoginUserCheck();
     } catch (e) {
-        console.error('No se pudo cargar la cola de revisión', e);
+        registerFailedLoginAttempt();
+        showNotify(e.message || "Incorrect password!", "error");
+        if (input) { input.value = ''; input.focus(); }
     }
 }
 
-// Sends one new asset to the review queue. The server records our deviceId
-// as the submitter so it can block us from approving it later.
-async function submitPending(assetInFileFormat) {
-    return workerCall('/pending-submit', { asset: assetInFileFormat, deviceId: getDeviceId() });
+function tryAutoLoginAdmin() {
+    const loginOverlay = document.getElementById('loginOverlay');
+    const adminContent = document.getElementById('adminContent');
+    if (!loginOverlay || !adminContent) return;
+    // If a session token survived a reload (same tab, < 1h), skip the login
+    // form entirely. This is what makes reloads feel instant.
+    if (getSessionToken()) {
+        handlePostLoginUserCheck();
+    }
+}
+tryAutoLoginAdmin();
+
+// --- Quick login popover on index.html ---------------------------------------
+
+// Module-level: whether the inline password field is currently visible.
+// The document-level click listener below reads this and closes the popover
+// when the user clicks outside. Documented because it looks like state that
+// could be local, but isn't.
+let adminQuickLoginOpen = false;
+
+function showAdminQuickLogin() {
+    const btn = document.getElementById('adminBtn');
+    const box = document.getElementById('adminLoginBox');
+    const input = document.getElementById('adminQuickPass');
+    if (!btn || !box || !input) return;
+
+    if (adminQuickLoginOpen) {
+        hideAdminQuickLogin();
+        return;
+    }
+
+    btn.classList.add('blur-sm', 'opacity-30', 'pointer-events-none');
+    box.classList.remove('hidden');
+    adminQuickLoginOpen = true;
+
+    input.value = '';
+    updateAdminQuickLabel();
+    input.focus();
 }
 
-// Edits an asset that is still sitting in the pending queue (not yet published).
-async function updatePendingAsset(id, assetInFileFormat) {
-    return workerCall('/pending-update', { id, asset: assetInFileFormat, deviceId: getDeviceId() });
+document.addEventListener('click', (e) => {
+    if (!adminQuickLoginOpen) return;
+    const adminAccess = document.getElementById('adminAccess');
+    if (adminAccess && !adminAccess.contains(e.target)) hideAdminQuickLogin();
+});
+
+function hideAdminQuickLogin() {
+    const btn = document.getElementById('adminBtn');
+    const box = document.getElementById('adminLoginBox');
+    const input = document.getElementById('adminQuickPass');
+    if (!btn || !box) return;
+    if (input) { input.blur(); input.value = ''; }   // clear on close
+    btn.classList.remove('blur-sm', 'opacity-30', 'pointer-events-none');
+    box.classList.add('hidden');
+    adminQuickLoginOpen = false;
+    updateAdminQuickLabel();
 }
+
+function updateAdminQuickLabel() {
+    const input = document.getElementById('adminQuickPass');
+    const label = document.getElementById('adminQuickPassLabel');
+    if (!input || !label) return;
+    label.classList.toggle('opacity-0', input.value.length > 0);
+}
+
+async function checkAdminQuickLogin(value) {
+    const lockedUntil = getLoginLockout();
+    if (lockedUntil) {
+        showNotify(`Demasiados intentos. Espera ${Math.ceil((lockedUntil - Date.now()) / 1000)}s.`, "error");
+        return;
+    }
+    if (!value) return;
+    try {
+        const token = await workerLogin(value);
+        clearLoginAttempts();
+        setSessionToken(token);
+        location.href = 'admin.html';
+    } catch (e) {
+        registerFailedLoginAttempt();
+        showNotify(e.message || "Incorrect password!", "error");
+        const input = document.getElementById('adminQuickPass');
+        if (input) { input.value = ''; updateAdminQuickLabel(); input.focus(); }
+    }
+}
+
+// Wire up the quick-login field once, at module load (not on each open).
+(function wireQuickLoginField() {
+    const input = document.getElementById('adminQuickPass');
+    if (!input) return;
+    input.addEventListener('input', updateAdminQuickLabel);
+    input.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') checkAdminQuickLogin(input.value);
+    });
+})();
+
+// Wire up the main login form on admin.html.
+(function wireLoginForm() {
+    const passInput = document.getElementById('pass');
+    if (!passInput) return;
+    passInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') login();
+    });
+})();
+
+async function handlePostLoginUserCheck() {
+    const deviceId = getDeviceId();
+    const existing = findUserByDeviceId(deviceId);
+
+    if (existing) {
+        if (existing.banned) {
+            clearSessionToken();
+            document.getElementById('loginOverlay')?.classList.remove('hidden');
+            document.getElementById('adminContent')?.classList.add('hidden');
+            showNotify("Acceso denegado: este dispositivo fue baneado.", "error");
+            return;
+        }
+        enterAdminPanel();
+        return;
+    }
+
+    showUsernamePrompt();
+}
+
+let adminAccessGranted = false;
+
+async function enterAdminPanel() {
+    if (adminAccessGranted) return;
+    adminAccessGranted = true;
+    document.getElementById('loginOverlay')?.classList.add('hidden');
+    document.getElementById('usernameModal')?.classList.add('hidden');
+    document.getElementById('adminContent')?.classList.remove('hidden');
+    updatePendingTabVisibility();
+    await refreshPendingFromServer();
+    renderManageList();
+    updateAdminStats();
+    showNotify("Access granted!");
+}
+
+function showUsernamePrompt() {
+    document.getElementById('loginOverlay')?.classList.add('hidden');
+    const modal = document.getElementById('usernameModal');
+    const input = document.getElementById('newUsernameInput');
+    const errorEl = document.getElementById('usernameError');
+    if (!modal || !input) return;
+    input.value = '';
+    errorEl?.classList.add('hidden');
+    modal.classList.remove('hidden');
+    input.focus();
+    input.onkeypress = (e) => { if (e.key === 'Enter') submitNewUsername(); };
+}
+
+async function submitNewUsername() {
+    const input = document.getElementById('newUsernameInput');
+    const errorEl = document.getElementById('usernameError');
+    const name = (input?.value || '').trim();
+    if (!name) return;
+
+    if (usernameTaken(name)) {
+        errorEl?.classList.remove('hidden');
+        return;
+    }
+    errorEl?.classList.add('hidden');
+
+    const newUser = {
+        id: newId(),
+        usuario: name,
+        deviceId: getDeviceId(),
+        banned: false,
+        creado: new Date().toISOString()
+    };
+    adminUsers.push(newUser);
+
+    try {
+        await persistUsers();
+    } catch (e) {
+        adminUsers.pop();
+        showNotify("No se pudo registrar el usuario: " + e.message, "error");
+        return;
+    }
+
+    enterAdminPanel();
+}
+
+// ============================================================================
+// DEVICE IDENTITY
+// ============================================================================
 
 const DEVICE_ID_KEY = 'coreassets_device_id';
 
@@ -262,8 +396,11 @@ function getCurrentUsername() {
     return (current && current.usuario) ? current.usuario : 'Admin';
 }
 
-// Users are STILL written to Vyn-users.js on GitHub (Vyn-body.js and this
-// file are the only two files the Worker commits now). Assets do not touch
+// ============================================================================
+// ASSETS — in-memory model
+// ============================================================================
+
+// Users are still written to Vyn-users.js on GitHub. Assets do NOT touch
 // GitHub anymore — they go straight to KV via persistAssets().
 function generateUsersFileContent(usersArr) {
     return "var adminUsers = " + JSON.stringify(usersArr, null, 4) + ";\n";
@@ -274,19 +411,114 @@ async function persistUsers() {
     await workerSave('/save-users', content, 'Update admin users');
 }
 
-// In-memory view used by the public gallery (index.html) and by the admin
-// stats. Kept as a separate array so filters can operate on a stable list
-// even while `assets` gets reassigned by refreshAssetsFromKV().
+// Shape conversion between the file/KV format (Portuguese keys) and the
+// in-memory format used everywhere in the UI (English keys).
+function fromFileFormat(m) {
+    return {
+        id: m.id,
+        title: m.nome,
+        desc: m.descricaoLonga || m.descricao || '',
+        descShort: m.descricao || (m.descricaoLonga || '').slice(0, 60),
+        fileUrl: m.linkDownload,
+        fileFormat: m.formato || '',
+        fileSize: m.tamanho || '',
+        categoria: Array.isArray(m.categoria) ? m.categoria : (m.categoria ? [m.categoria] : []),
+        imagenes: m.imagens || [],
+        img: (m.imagens && m.imagens[0]) || '',
+        status: m.status || 'nenhum',
+        fail: m.fail || 'none',
+        autor: m.autor || ''
+    };
+}
+
+function toFileFormat(a) {
+    return {
+        id: a.id,
+        nome: a.title,
+        categoria: a.categoria || [],
+        descricao: (a.descShort || '').trim() || (a.desc || '').slice(0, 60),
+        descricaoLonga: a.desc || '',
+        imagens: a.imagenes || [],
+        linkDownload: a.fileUrl,
+        formato: a.fileFormat || '',
+        tamanho: a.fileSize || '',
+        status: a.status || 'nenhum',
+        fail: a.fail || 'none',
+        autor: a.autor || ''
+    };
+}
+
+let assets = [];
+let __kvLoaded = false;
+
+let pendingAssets = [];
+let pendingQueue = [];
+let assetToDelete = null;
+let assetToDeleteSource = 'admin';
+
+function setFileStatus(connected, label) {
+    const dot = document.getElementById('fileStatusDot');
+    const text = document.getElementById('fileStatusText');
+    if (!dot || !text) return;
+    dot.classList.remove('bg-slate-600', 'bg-red-500', 'bg-green-500');
+    dot.classList.add(connected ? 'bg-green-500' : 'bg-red-500');
+    text.innerText = label;
+}
+
+// Rewrites the entire published list in KV. The Worker diffs old vs new to
+// enforce ownership rules server-side, so a 403 here means the caller
+// doesn't own one of the changed assets.
+async function persistAssets() {
+    await workerCall('/save-assets', {
+        assets: assets.map(toFileFormat),
+        message: 'Update assets from admin panel'
+    });
+    setFileStatus(true, 'Publicado ✔️');
+}
+
+async function refreshPendingFromServer() {
+    const token = getSessionToken();
+    if (!token) return;
+    try {
+        const res = await fetch(`${WORKER_URL}/pending-list`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && Array.isArray(data.items)) {
+            pendingQueue = data.items;
+            // Keep both: queueId for Worker calls, id for editing the asset.
+            pendingAssets = data.items.map(x => {
+                const a = fromFileFormat(x.asset);
+                a.queueId = x.id;
+                return a;
+            });
+        }
+    } catch (e) {
+        console.error('No se pudo cargar la cola de revisión', e);
+    }
+}
+
+async function submitPending(assetInFileFormat) {
+    return workerCall('/pending-submit', { asset: assetInFileFormat, deviceId: getDeviceId() });
+}
+
+async function updatePendingAsset(id, assetInFileFormat) {
+    return workerCall('/pending-update', { id, asset: assetInFileFormat, deviceId: getDeviceId() });
+}
+
+// In-memory view used by the public gallery and by the admin stats.
+// Kept as a separate array so filters operate on a stable list even while
+// `assets` gets reassigned by refreshAssetsFromKV().
 const allAssets = [];
 
-// assetId -> { comments, rating, downloads }. Declared here (before the
-// first renderAssetGrid() runs at the bottom of this file) on purpose: a
-// `const` referenced before its own declaration line has executed throws
-// (temporal dead zone), and since that first render happens synchronously
-// on page load, that used to kill the rest of the script silently — which
-// is why filters, comments and downloads all looked broken at once.
+// Per-asset cache: { comments, rating, downloads }. Populated lazily when
+// the user opens an asset's modal. Populated eagerly during grid render
+// only if already present (see renderAssetCard).
 const __extrasCache = {};
 
+// ============================================================================
+// FAVORITES
+// ============================================================================
 
 const FAVORITES_KEY = 'coreassets_favorites';
 
@@ -312,7 +544,7 @@ function toggleFavorite(id) {
     try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(favs)); } catch (e) {  }
 
     const nowFav = isFavorite(id);
-    document.querySelectorAll(`.fav-btn[data-id="${id}"]`).forEach(heartBtn => {
+    document.querySelectorAll(`.fav-btn[data-id="${CSS.escape(String(id))}"]`).forEach(heartBtn => {
         const icon = heartBtn.querySelector('.fav-icon');
         if (icon) {
             icon.setAttribute('fill', nowFav ? '#ef4444' : 'none');
@@ -323,8 +555,28 @@ function toggleFavorite(id) {
     if (filtroActual === "FAVORITES") animarCambioDeGrid();
 }
 
+// ============================================================================
+// FILTERS & SEARCH
+// ============================================================================
+
 let filtroActual = "ALL";
+let busquedaActual = "";
 const LIMITE_CATEGORIAS_VISIBLES = 5;
+
+// True if the asset matches the current free-text search across title,
+// short desc, long desc, categories and author.
+function assetMatchesSearch(a) {
+    if (!busquedaActual) return true;
+    const q = busquedaActual.toLowerCase();
+    const hay = [
+        a.title || '',
+        a.descShort || '',
+        a.desc || '',
+        a.autor || '',
+        (a.categoria || []).join(' ')
+    ].join(' ').toLowerCase();
+    return hay.includes(q);
+}
 
 function renderFilters() {
     const mainFiltersContainer = document.getElementById("main-filters");
@@ -348,6 +600,7 @@ function renderFilters() {
 
     if (extras.length > 0) {
         const btnToggle = document.createElement("button");
+        btnToggle.type = "button";
         btnToggle.className = "px-4 py-1.5 rounded-full font-bold text-xs border border-white/10 text-slate-400 hover:text-white hover:border-white/30 transition";
         btnToggle.innerText = "More +";
         btnToggle.onclick = () => {
@@ -362,6 +615,7 @@ function renderFilters() {
 
 function crearBotonFiltro(categoriaNombre, etiqueta = null) {
     const btn = document.createElement("button");
+    btn.type = "button";
     const isActive = filtroActual === categoriaNombre;
     btn.className = `px-4 py-1.5 rounded-full font-bold text-xs border transition ${isActive ? 'border-cyan-400 text-cyan-400 bg-cyan-400/10' : 'border-white/10 text-slate-400 hover:text-white hover:border-white/30'}`;
     btn.innerText = etiqueta || (categoriaNombre.charAt(0) + categoriaNombre.slice(1).toLowerCase());
@@ -375,6 +629,30 @@ function crearBotonFiltro(categoriaNombre, etiqueta = null) {
     return btn;
 }
 
+// Wire up the search bar (index.html only). Debounced so typing doesn't
+// re-render on every keystroke.
+(function wireSearchBar() {
+    const input = document.getElementById('searchInput');
+    const wrapper = document.getElementById('searchWrapper');
+    const clear = document.getElementById('searchClear');
+    if (!input || !wrapper || !clear) return;
+
+    const onSearch = debounce(() => {
+        busquedaActual = input.value.trim();
+        wrapper.classList.toggle('has-value', input.value.length > 0);
+        animarCambioDeGrid();
+    }, 180);
+
+    input.addEventListener('input', onSearch);
+    clear.addEventListener('click', () => {
+        input.value = '';
+        busquedaActual = '';
+        wrapper.classList.remove('has-value');
+        input.focus();
+        animarCambioDeGrid();
+    });
+})();
+
 function animarCambioDeGrid() {
     const grid = document.getElementById('assetGrid');
     if (!grid) { renderAssetGrid(); return; }
@@ -385,6 +663,10 @@ function animarCambioDeGrid() {
     }, 200);
 }
 
+// ============================================================================
+// MEDIA RENDERING
+// ============================================================================
+
 function renderMedia(url, sizeClasses, extraClasses = '', interactive = false, lazy = false) {
     if (!url) return `<div class="${sizeClasses} ${extraClasses} bg-slate-800"></div>`;
 
@@ -392,27 +674,27 @@ function renderMedia(url, sizeClasses, extraClasses = '', interactive = false, l
     if (streamableMatch) {
         const params = interactive ? 'autoplay=1&muted=1&loop=1' : 'autoplay=1&muted=1&loop=1&nocontrols=1';
         const pointerStyle = interactive ? '' : 'pointer-events:none;';
+        // Streamable id is regex-restricted to [a-zA-Z0-9], safe to inline.
         return `<div class="${sizeClasses} ${extraClasses} relative overflow-hidden bg-black">
             <iframe src="https://streamable.com/e/${streamableMatch[1]}?${params}" class="absolute inset-0 w-full h-full" style="${pointerStyle}" frameborder="0" allow="autoplay; fullscreen" allowfullscreen></iframe>
         </div>`;
     }
 
+    // Escape URL before it enters any HTML attribute.
+    const safeUrl = escapeHTML(url);
+
     if (/\.(mp4|webm|ogg)(\?.*)?$/i.test(url)) {
-        return `<video class="${sizeClasses} ${extraClasses} object-cover" src="${escapeHTML(url)}" autoplay muted loop playsinline ${interactive ? 'controls' : ''}></video>`;
+        return `<video class="${sizeClasses} ${extraClasses} object-cover" src="${safeUrl}" autoplay muted loop playsinline ${interactive ? 'controls' : ''}></video>`;
     }
 
-    // Perf: grid cards defer loading their background image until they are
-    // about to enter the viewport (see initLazyMedia), instead of every
-    // card's image downloading immediately on page load.
     if (lazy) {
-        return `<div class="${sizeClasses} ${extraClasses} bg-cover bg-center lazy-media bg-slate-800" data-bg-url="${escapeHTML(url)}"></div>`;
+        return `<div class="${sizeClasses} ${extraClasses} bg-cover bg-center lazy-media bg-slate-800" data-bg-url="${safeUrl}"></div>`;
     }
 
-    return `<div class="${sizeClasses} ${extraClasses} bg-cover bg-center" style="background-image: url('${escapeHTML(url)}')"></div>`;
+    return `<div class="${sizeClasses} ${extraClasses} bg-cover bg-center" style="background-image: url('${safeUrl}')"></div>`;
 }
 
-// --- Performance: single shared IntersectionObserver reused for every grid
-// render, instead of downloading every card's cover image up front.
+// Single shared IntersectionObserver reused for every grid render.
 let __lazyMediaObserver = null;
 function initLazyMedia() {
     if (!('IntersectionObserver' in window)) {
@@ -439,17 +721,22 @@ function initLazyMedia() {
     document.querySelectorAll('.lazy-media[data-bg-url]').forEach(el => __lazyMediaObserver.observe(el));
 }
 
+// ============================================================================
+// TOASTS
+// ============================================================================
+
 function showNotify(text, type = 'success') {
     const container = document.getElementById('notification-container');
-    if(!container) return;
+    if (!container) return;
     const toast = document.createElement('div');
     const styles = {
-        success: { color: 'bg-green-600' },
-        error: { color: 'bg-red-600' },
+        success:  { color: 'bg-green-600' },
+        error:    { color: 'bg-red-600' },
         download: { color: 'bg-blue-600' }
     };
     const s = styles[type] || styles.success;
     toast.className = `${s.color} text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 toast-in mb-2 font-bold z-50`;
+    // Escape: the text is user-derived in the "server said no" case.
     toast.innerHTML = `<span>${escapeHTML(text)}</span>`;
     container.appendChild(toast);
     setTimeout(() => {
@@ -459,261 +746,20 @@ function showNotify(text, type = 'success') {
     }, 3000);
 }
 
-let adminQuickLoginOpen = false;
+// ============================================================================
+// ADMIN — stat strip & form
+// ============================================================================
 
-function showAdminQuickLogin() {
-    const btn = document.getElementById('adminBtn');
-    const box = document.getElementById('adminLoginBox');
-    const input = document.getElementById('adminQuickPass');
-    if (!btn || !box || !input) return;
-
-    if (adminQuickLoginOpen) {
-        hideAdminQuickLogin();
-        return;
-    }
-
-    btn.classList.add('blur-sm', 'opacity-30', 'pointer-events-none');
-    box.classList.remove('hidden');
-    adminQuickLoginOpen = true;
-
-    input.value = getSavedAdminPass();
-    updateAdminQuickLabel();
-    input.focus();
-
-    input.addEventListener('input', () => {
-        updateAdminQuickLabel();
-        tryAutoSubmitQuickLogin();
-    });
-    input.addEventListener('keypress', function onKey(e) {
-        if (e.key === 'Enter') checkAdminQuickLogin(input.value);
-    });
-
-    tryAutoSubmitQuickLogin();
-}
-
-document.addEventListener('click', (e) => {
-    if (!adminQuickLoginOpen) return;
-    const adminAccess = document.getElementById('adminAccess');
-    if (adminAccess && !adminAccess.contains(e.target)) hideAdminQuickLogin();
-});
-
-function hideAdminQuickLogin() {
-    const btn = document.getElementById('adminBtn');
-    const box = document.getElementById('adminLoginBox');
-    const input = document.getElementById('adminQuickPass');
-    if (!btn || !box) return;
-    if (input) input.blur();
-    btn.classList.remove('blur-sm', 'opacity-30', 'pointer-events-none');
-    box.classList.add('hidden');
-    adminQuickLoginOpen = false;
-}
-
-function updateAdminQuickLabel() {
-    const input = document.getElementById('adminQuickPass');
-    const label = document.getElementById('adminQuickPassLabel');
-    if (!input || !label) return;
-    label.classList.toggle('opacity-0', input.value.length > 0);
-}
-
-// --- Security: soft client-side brake on repeated failed login attempts.
-// This is only a UX deterrent against casual brute-forcing — the real
-// protection has to live on the Worker, which is the only side that can't
-// be bypassed by editing this file.
-const LOGIN_ATTEMPTS_KEY = 'coreassets_login_attempts';
-function registerFailedLoginAttempt() {
-    let data;
-    try { data = JSON.parse(sessionStorage.getItem(LOGIN_ATTEMPTS_KEY)) || { count: 0, until: 0 }; }
-    catch (e) { data = { count: 0, until: 0 }; }
-    data.count += 1;
-    if (data.count >= 5) data.until = Date.now() + 30000;
-    try { sessionStorage.setItem(LOGIN_ATTEMPTS_KEY, JSON.stringify(data)); } catch (e) { }
-    return data;
-}
-function getLoginLockout() {
-    try {
-        const data = JSON.parse(sessionStorage.getItem(LOGIN_ATTEMPTS_KEY)) || { count: 0, until: 0 };
-        return data.until > Date.now() ? data.until : 0;
-    } catch (e) { return 0; }
-}
-function clearLoginAttempts() {
-    try { sessionStorage.removeItem(LOGIN_ATTEMPTS_KEY); } catch (e) { }
-}
-
-async function checkAdminQuickLogin(value) {
-    const lockedUntil = getLoginLockout();
-    if (lockedUntil) {
-        showNotify(`Demasiados intentos. Espera ${Math.ceil((lockedUntil - Date.now()) / 1000)}s.`, "error");
-        return;
-    }
-    try {
-        const token = await workerLogin(value);
-        clearLoginAttempts();
-        setSessionToken(token);
-        saveAdminPass(value);
-        location.href = 'admin.html';
-    } catch (e) {
-        registerFailedLoginAttempt();
-        showNotify("Incorrect password!", "error");
-        const input = document.getElementById('adminQuickPass');
-        if (input) { input.value = ''; updateAdminQuickLabel(); input.focus(); }
-    }
-}
-
-let quickLoginAutoSubmitting = false;
-function tryAutoSubmitQuickLogin() {
-    const input = document.getElementById('adminQuickPass');
-    const saved = getSavedAdminPass();
-    if (!input || quickLoginAutoSubmitting || !saved) return;
-    if (input.value.length === saved.length) {
-        quickLoginAutoSubmitting = true;
-        checkAdminQuickLogin(input.value).finally(() => {
-            quickLoginAutoSubmitting = false;
-        });
-    }
-}
-
-const passInput = document.getElementById('pass');
-if(passInput) {
-    passInput.value = getSavedAdminPass();
-    passInput.addEventListener('keypress', (e) => {
-        if(e.key === 'Enter') login();
-    });
-
-    let passAutoSubmitting = false;
-    function tryAutoSubmitPass() {
-        const saved = getSavedAdminPass();
-        if (passAutoSubmitting || !saved) return;
-        if (passInput.value.length === saved.length) {
-            passAutoSubmitting = true;
-            login().finally(() => {
-                passAutoSubmitting = false;
-            });
-        }
-    }
-    passInput.addEventListener('input', tryAutoSubmitPass);
-    tryAutoSubmitPass();
-}
-
-async function login() {
-    const lockedUntil = getLoginLockout();
-    if (lockedUntil) {
-        showNotify(`Demasiados intentos. Espera ${Math.ceil((lockedUntil - Date.now()) / 1000)}s.`, "error");
-        return;
-    }
-    const pass = document.getElementById('pass').value;
-    try {
-        const token = await workerLogin(pass);
-        clearLoginAttempts();
-        setSessionToken(token);
-        saveAdminPass(pass);
-        await handlePostLoginUserCheck();
-    } catch (e) {
-        registerFailedLoginAttempt();
-        showNotify("Incorrect password!", "error");
-    }
-}
-
-function tryAutoLoginAdmin() {
-    const loginOverlay = document.getElementById('loginOverlay');
-    const adminContent = document.getElementById('adminContent');
-    if (!loginOverlay || !adminContent) return;
-    if (getSessionToken()) {
-        handlePostLoginUserCheck();
-    }
-}
-tryAutoLoginAdmin();
-
-async function handlePostLoginUserCheck() {
-    const deviceId = getDeviceId();
-    const existing = findUserByDeviceId(deviceId);
-
-    if (existing) {
-        if (existing.banned) {
-            clearSessionToken();
-            document.getElementById('loginOverlay')?.classList.remove('hidden');
-            document.getElementById('adminContent')?.classList.add('hidden');
-            showNotify("Acceso denegado: este dispositivo fue baneado.", "error");
-            return;
-        }
-        enterAdminPanel();
-        return;
-    }
-
-    showUsernamePrompt();
-}
-
-let adminAccessGranted = false;
-
-async function enterAdminPanel() {
-    if (adminAccessGranted) return;
-    adminAccessGranted = true;
-    document.getElementById('loginOverlay').classList.add('hidden');
-    document.getElementById('usernameModal')?.classList.add('hidden');
-    document.getElementById('adminContent').classList.remove('hidden');
-    updatePendingTabVisibility();
-    await refreshPendingFromServer();
-    renderManageList();
-    updateAdminStats();
-    showNotify("Access granted!");
-}
-
-// --- Admin stat strip: quick read of the panel's own state, no extra
-// network calls beyond what refreshPendingFromServer() already fetched.
 function updateAdminStats() {
-    const totalEl = document.getElementById('statTotalAssets');
+    const totalEl   = document.getElementById('statTotalAssets');
     const pendingEl = document.getElementById('statTotalPending');
-    const usersEl = document.getElementById('statTotalUsers');
-    const roleEl = document.getElementById('statCurrentRole');
+    const usersEl   = document.getElementById('statTotalUsers');
+    const roleEl    = document.getElementById('statCurrentRole');
     if (!totalEl) return;
-    totalEl.innerText = String(allAssets.length);
+    totalEl.innerText   = String(allAssets.length);
     pendingEl.innerText = String((pendingAssets || []).length);
-    usersEl.innerText = String((adminUsers || []).length);
-    roleEl.innerText = isCurrentUserVyn() ? 'Vyn' : 'Mod';
-}
-
-function showUsernamePrompt() {
-    document.getElementById('loginOverlay')?.classList.add('hidden');
-    const modal = document.getElementById('usernameModal');
-    const input = document.getElementById('newUsernameInput');
-    const errorEl = document.getElementById('usernameError');
-    if (!modal || !input) return;
-    input.value = '';
-    errorEl?.classList.add('hidden');
-    modal.classList.remove('hidden');
-    input.focus();
-    input.onkeypress = (e) => { if (e.key === 'Enter') submitNewUsername(); };
-}
-
-async function submitNewUsername() {
-    const input = document.getElementById('newUsernameInput');
-    const errorEl = document.getElementById('usernameError');
-    const name = (input?.value || '').trim();
-    if (!name) return;
-
-    if (usernameTaken(name)) {
-        errorEl?.classList.remove('hidden');
-        return;
-    }
-    errorEl?.classList.add('hidden');
-
-    const newUser = {
-        id: Date.now(),
-        usuario: name,
-        deviceId: getDeviceId(),
-        banned: false,
-        creado: new Date().toISOString()
-    };
-    adminUsers.push(newUser);
-
-    try {
-        await persistUsers();
-    } catch (e) {
-        adminUsers.pop();
-        showNotify("No se pudo registrar el usuario: " + e.message, "error");
-        return;
-    }
-
-    enterAdminPanel();
+    usersEl.innerText   = String((adminUsers || []).length);
+    roleEl.innerText    = isCurrentUserVyn() ? 'Vyn' : 'Mod';
 }
 
 function addImageField(value = '') {
@@ -721,6 +767,7 @@ function addImageField(value = '') {
     if (!list) return;
     const row = document.createElement('div');
     row.className = 'flex gap-2';
+    // value is user input → escape before injecting into the attribute.
     row.innerHTML = `
         <input type="text" value="${value ? escapeHTML(value) : ''}" placeholder="https://i.postimg.cc/..." class="asset-img-field flex-1 bg-black/50 p-4 rounded-xl border border-white/5 outline-none focus:border-blue-500">
         <button type="button" onclick="this.parentElement.remove()" class="bg-red-600/10 text-red-500 hover:bg-red-600 hover:text-white transition px-4 rounded-xl font-bold">✕</button>
@@ -742,79 +789,33 @@ function setImageFields(urls) {
 }
 
 async function saveAsset() {
-    const id = document.getElementById('editId').value;
-    const source = document.getElementById('editSource').value || 'admin';
-    const title = document.getElementById('assetTitle').value;
-    const desc = document.getElementById('assetDesc').value;
-    const descShort = document.getElementById('assetDescShort').value;
-    const fileUrl = document.getElementById('assetFileUrl').value;
+    const id         = document.getElementById('editId').value;
+    const source     = document.getElementById('editSource').value || 'admin';
+    const title      = document.getElementById('assetTitle').value;
+    const desc       = document.getElementById('assetDesc').value;
+    const descShort  = document.getElementById('assetDescShort').value;
+    const fileUrl    = document.getElementById('assetFileUrl').value;
     const fileFormat = document.getElementById('assetFileFormat').value;
-    const fileSize = document.getElementById('assetFileSize').value;
+    const fileSize   = document.getElementById('assetFileSize').value;
     const categoriaRaw = document.getElementById('assetCategory').value;
-    const categoria = categoriaRaw.split(',').map(c => c.trim()).filter(Boolean);
-    const status = document.getElementById('assetStatus').value;
-    const fail = document.getElementById('assetFail').value;
-    const imagenes = collectImageFields();
+    const categoria  = categoriaRaw.split(',').map(c => c.trim()).filter(Boolean);
+    const status     = document.getElementById('assetStatus').value;
+    const fail       = document.getElementById('assetFail').value;
+    const imagenes   = collectImageFields();
 
     if (!title || !fileUrl) return showNotify("Title and Link are required!", "error");
 
     try {
         if (id) {
-
             if (source === 'pending') {
-                const a = pendingAssets.find(x => x.queueId == id);
-                if (!a) return showNotify("Asset not found.", "error");
-                a.title = title; a.desc = desc; a.descShort = descShort; a.fileUrl = fileUrl; a.status = status; a.fail = fail;
-                a.fileFormat = fileFormat; a.fileSize = fileSize; a.categoria = categoria;
-                if (imagenes.length) { a.imagenes = imagenes; a.img = imagenes[0]; }
-
-                await updatePendingAsset(id, toFileFormat(a));
-                showNotify("Cambios guardados en revisión.");
-                switchTab('pending');
+                await saveEditedPending(id, { title, desc, descShort, fileUrl, status, fail, fileFormat, fileSize, categoria, imagenes });
             } else {
-                const a = assets.find(x => x.id == id);
-                if (!a) return showNotify("Asset not found.", "error");
-                const backup = { ...a };
-                a.title = title; a.desc = desc; a.descShort = descShort; a.fileUrl = fileUrl; a.status = status; a.fail = fail;
-                a.fileFormat = fileFormat; a.fileSize = fileSize; a.categoria = categoria;
-                if (imagenes.length) { a.imagenes = imagenes; a.img = imagenes[0]; }
-
-                try {
-                    await persistAssets();
-                } catch (e) {
-                    // Worker rejected it (e.g. not the owner) — undo the local
-                    // mutation so the panel doesn't show an edit that never saved.
-                    Object.assign(a, backup);
-                    renderManageList();
-                    throw e;
-                }
-                showNotify("Asset updated!");
-                switchTab('manage');
+                await saveEditedPublished(id, { title, desc, descShort, fileUrl, status, fail, fileFormat, fileSize, categoria, imagenes });
             }
         } else {
-
             if (!imagenes.length) return showNotify("Please enter at least one image URL!", "error");
-            const nuevo = { id: Date.now(), title, desc, descShort, fileUrl, status, fail, fileFormat, fileSize, categoria, imagenes, img: imagenes[0], autor: getCurrentUsername() };
-
-            if (isCurrentUserVyn()) {
-                assets.push(nuevo);
-                try {
-                    await persistAssets();
-                } catch (e) {
-                    assets = assets.filter(x => x.id !== nuevo.id);
-                    renderManageList();
-                    throw e;
-                }
-                showNotify("Asset created!");
-                switchTab('manage');
-            } else {
-                await submitPending(toFileFormat(nuevo));
-                showNotify("Enviado a revisión. Se publicará cuando sea aprobado.");
-                await refreshPendingFromServer();
-                switchTab('pending');
-            }
+            await createNewAsset({ title, desc, descShort, fileUrl, status, fail, fileFormat, fileSize, categoria, imagenes });
         }
-
         resetForm();
     } catch (e) {
         console.error(e);
@@ -822,17 +823,133 @@ async function saveAsset() {
     }
 }
 
+async function saveEditedPending(id, fields) {
+    const a = pendingAssets.find(x => x.queueId == id);
+    if (!a) return showNotify("Asset not found.", "error");
+    Object.assign(a, fields);
+    if (fields.imagenes.length) { a.imagenes = fields.imagenes; a.img = fields.imagenes[0]; }
+    await updatePendingAsset(id, toFileFormat(a));
+    showNotify("Cambios guardados en revisión.");
+    switchTab('pending');
+}
+
+async function saveEditedPublished(id, fields) {
+    const a = assets.find(x => x.id == id);
+    if (!a) return showNotify("Asset not found.", "error");
+    const backup = { ...a };
+    Object.assign(a, fields);
+    if (fields.imagenes.length) { a.imagenes = fields.imagenes; a.img = fields.imagenes[0]; }
+
+    try {
+        await persistAssets();
+    } catch (e) {
+        // Worker rejected it (e.g. not the owner) — undo the local mutation.
+        Object.assign(a, backup);
+        renderManageList();
+        throw e;
+    }
+    showNotify("Asset updated!");
+    switchTab('manage');
+}
+
+async function createNewAsset(fields) {
+    const nuevo = {
+        id: newId(),
+        ...fields,
+        img: fields.imagenes[0],
+        autor: getCurrentUsername()
+    };
+
+    if (isCurrentUserVyn()) {
+        assets.push(nuevo);
+        try {
+            await persistAssets();
+        } catch (e) {
+            assets = assets.filter(x => x.id !== nuevo.id);
+            renderManageList();
+            throw e;
+        }
+        showNotify("Asset created!");
+        switchTab('manage');
+    } else {
+        await submitPending(toFileFormat(nuevo));
+        showNotify("Enviado a revisión. Se publicará cuando sea aprobado.");
+        await refreshPendingFromServer();
+        switchTab('pending');
+    }
+}
+
+// ============================================================================
+// PUBLIC GALLERY — render
+// ============================================================================
+
+// Renders a single asset card. Called from renderAssetGrid()'s map() so all
+// the per-card info (rating, downloads) is injected at build time — no
+// post-render querySelectorAll pass.
+//
+// ESCAPING: every value that came from KV (title, desc, images…) is escaped
+// here, at the HTML-insertion point. `a.id` goes through escapeHTML too,
+// because it flows into onclick="fn('...')" attributes.
+function renderAssetCard(a, index) {
+    const statusLabels = { 'nenhum': '', 'novo': 'New', 'limitado': 'Limited', 'recomendado': 'Recommended' };
+    const label = statusLabels[a.status] || a.status;
+    const safeId = escapeHTML(String(a.id));
+
+    const badge = (a.status && a.status !== 'nenhum')
+        ? `<span class="absolute top-4 left-4 px-3 py-1 rounded-full text-[10px] font-black uppercase badge-${escapeHTML(a.status)} z-10">${escapeHTML(label)}</span>`
+        : '';
+
+    const fileMeta = (a.fileFormat || a.fileSize) ? `
+        <div class="flex gap-2 mt-3 font-mono">
+            ${a.fileFormat ? `<span class="bg-white/5 text-slate-300 text-[10px] font-bold uppercase px-2 py-1 rounded-lg">${escapeHTML(a.fileFormat)}</span>` : ''}
+            ${a.fileSize   ? `<span class="bg-white/5 text-slate-300 text-[10px] font-bold uppercase px-2 py-1 rounded-lg">${escapeHTML(a.fileSize)}</span>`   : ''}
+        </div>` : '';
+
+    // #18: inline the cached rating/downloads at build time.
+    const cache = __extrasCache[a.id];
+    const ratingHtml = cache && cache.rating
+        ? starsHTML(cache.rating.average) + (cache.rating.count ? ` <span class="text-slate-600">(${cache.rating.count})</span>` : '')
+        : '☆☆☆☆☆';
+    const downloadsHtml = cache && cache.downloads ? `· ${cache.downloads} descargas` : '';
+
+    const delayMs = Math.min(index, 10) * 40;
+
+    return `
+        <div class="asset-card relative bg-slate-900 border border-white/5 rounded-3xl overflow-hidden group hover:border-blue-500 transition-all duration-300 animate__animated animate__fadeInUp" style="animation-delay:${delayMs}ms; animation-duration:0.4s;">
+            ${badge}
+            <button type="button" aria-label="Descargar" onclick="event.stopPropagation(); handleDownload('${safeId}')" class="shortcut-btn absolute top-4 right-4 bg-blue-600 p-3 rounded-xl z-20 opacity-0 translate-y-[-10px] transition-all hover:bg-blue-500 shadow-xl">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+            </button>
+            <button type="button" aria-label="Añadir a favoritos" onclick="event.stopPropagation(); toggleFavorite('${safeId}')" data-id="${safeId}" data-context="grid" class="fav-btn shortcut-btn absolute top-16 right-4 w-9 h-9 flex items-center justify-center bg-slate-950/80 rounded-xl z-20 opacity-0 translate-y-[-10px] transition-all hover:bg-slate-900 shadow-xl">
+                <svg class="fav-icon" width="16" height="16" viewBox="0 0 24 24" fill="${isFavorite(a.id) ? '#ef4444' : 'none'}" stroke="${isFavorite(a.id) ? '#ef4444' : '#ffffff'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.7-4.35-9.3-8.28C1.1 10.3 1.7 6.9 4.6 5.4c2.4-1.24 5-.3 6.4 1.7 1.4-2 4-2.94 6.4-1.7 2.9 1.5 3.5 4.9 1.9 7.32C18.7 16.65 12 21 12 21z"/></svg>
+            </button>
+            <div onclick="openAssetDetail('${safeId}')" class="cursor-pointer">
+                ${renderMedia(a.img, 'h-52 w-full', 'transition-transform duration-500 group-hover:scale-110', false, true)}
+                <div class="p-6">
+                    <h3 class="font-display text-xl font-bold mb-2 transition-colors">${escapeHTML(a.title)}</h3>
+                    <p class="text-slate-500 text-sm line-clamp-2">${escapeHTML(a.descShort || a.desc || 'Click to see details.')}</p>
+                    <div class="flex items-center gap-2 mt-3 text-[11px] text-slate-500 font-mono">
+                        <span class="asset-rating-summary" data-asset-id="${safeId}">${ratingHtml}</span>
+                        <span class="asset-download-count" data-asset-id="${safeId}">${downloadsHtml}</span>
+                    </div>
+                    ${fileMeta}
+                </div>
+            </div>
+        </div>`;
+}
+
 function renderAssetGrid() {
     const grid = document.getElementById('assetGrid');
     if (!grid) return;
 
     const itemsFiltrados = allAssets.filter(a => {
+        if (!assetMatchesSearch(a)) return false;
         if (filtroActual === "ALL") return true;
         if (filtroActual === "FAVORITES") return isFavorite(a.id);
         return (a.categoria || []).some(cat => String(cat).toUpperCase() === filtroActual);
     });
 
-    if (filtroActual === "FAVORITES" && itemsFiltrados.length === 0) {
+    if (filtroActual === "FAVORITES" && itemsFiltrados.length === 0 && !busquedaActual) {
         grid.innerHTML = `<p class="col-span-full text-center text-slate-500 py-16">No favorites yet — tap the 🤍 on any asset to save it here.</p>`;
         return;
     }
@@ -840,71 +957,27 @@ function renderAssetGrid() {
     const ORDEN_CATEGORIAS = ["BODY", "GAMES", "ANIMATIONS", "ASSETS"];
     function prioridadCategoria(item) {
         const cats = (item.categoria || []).map(c => String(c).toUpperCase());
-        let mejorPrioridad = ORDEN_CATEGORIAS.length;
+        let best = ORDEN_CATEGORIAS.length;
         cats.forEach(cat => {
             const idx = ORDEN_CATEGORIAS.indexOf(cat);
-            if (idx !== -1 && idx < mejorPrioridad) mejorPrioridad = idx;
+            if (idx !== -1 && idx < best) best = idx;
         });
-        return mejorPrioridad;
+        return best;
     }
     itemsFiltrados.sort((a, b) => prioridadCategoria(a) - prioridadCategoria(b));
 
     if (itemsFiltrados.length === 0) {
         const msg = __kvLoaded
-            ? 'No items found in this category.'
+            ? (busquedaActual ? 'No hay assets que coincidan con tu búsqueda.' : 'No items found in this category.')
             : 'Cargando assets…';
         grid.innerHTML = `<p class="col-span-full text-center text-slate-500 py-16">${msg}</p>`;
         return;
     }
 
-    // Perf: build every card into an array and join+set innerHTML once,
-    // instead of the old grid.innerHTML += ... per card (which forces a
-    // reflow/reparse on every single iteration).
-    const cardsHTML = itemsFiltrados.map((a, i) => {
-
-        const statusLabels = { 'nenhum': '', 'novo': 'New', 'limitado': 'Limited', 'recomendado': 'Recommended' };
-        const label = statusLabels[a.status] || a.status;
-
-        const badge = a.status && a.status !== 'nenhum' ? `<span class="absolute top-4 left-4 px-3 py-1 rounded-full text-[10px] font-black uppercase badge-${a.status} z-10">${escapeHTML(label)}</span>` : '';
-
-        const fileMeta = (a.fileFormat || a.fileSize) ? `
-                        <div class="flex gap-2 mt-3 font-mono">
-                            ${a.fileFormat ? `<span class="bg-white/5 text-slate-300 text-[10px] font-bold uppercase px-2 py-1 rounded-lg">${escapeHTML(a.fileFormat)}</span>` : ''}
-                            ${a.fileSize ? `<span class="bg-white/5 text-slate-300 text-[10px] font-bold uppercase px-2 py-1 rounded-lg">${escapeHTML(a.fileSize)}</span>` : ''}
-                        </div>` : '';
-
-        const delayMs = Math.min(i, 10) * 40;
-
-        return `
-            <div class="asset-card relative bg-slate-900 border border-white/5 rounded-3xl overflow-hidden group hover:border-blue-500 transition-all duration-300 animate__animated animate__fadeInUp" style="animation-delay:${delayMs}ms; animation-duration:0.4s;">
-                ${badge}
-                <button onclick="event.stopPropagation(); handleDownload('${escapeHTML(a.id)}')" class="shortcut-btn absolute top-4 right-4 bg-blue-600 p-3 rounded-xl z-20 opacity-0 translate-y-[-10px] transition-all hover:bg-blue-500 shadow-xl">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
-                </button>
-                <button onclick="event.stopPropagation(); toggleFavorite('${escapeHTML(a.id)}')" data-id="${escapeHTML(a.id)}" data-context="grid" class="fav-btn shortcut-btn absolute top-16 right-4 w-9 h-9 flex items-center justify-center bg-slate-950/80 rounded-xl z-20 opacity-0 translate-y-[-10px] transition-all hover:bg-slate-900 shadow-xl">
-                    <svg class="fav-icon" width="16" height="16" viewBox="0 0 24 24" fill="${isFavorite(a.id) ? '#ef4444' : 'none'}" stroke="${isFavorite(a.id) ? '#ef4444' : '#ffffff'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.7-4.35-9.3-8.28C1.1 10.3 1.7 6.9 4.6 5.4c2.4-1.24 5-.3 6.4 1.7 1.4-2 4-2.94 6.4-1.7 2.9 1.5 3.5 4.9 1.9 7.32C18.7 16.65 12 21 12 21z"/></svg>
-                </button>
-                <div onclick="openAssetDetail('${escapeHTML(a.id)}')" class="cursor-pointer">
-                    ${renderMedia(a.img, 'h-52 w-full', 'transition-transform duration-500 group-hover:scale-110', false, true)}
-                    <div class="p-6">
-                        <h3 class="font-display text-xl font-bold mb-2 transition-colors">${escapeHTML(a.title)}</h3>
-                        <p class="text-slate-500 text-sm line-clamp-2">${escapeHTML(a.descShort || a.desc || 'Click to see details.')}</p>
-                        <div class="flex items-center gap-2 mt-3 text-[11px] text-slate-500 font-mono">
-                            <span class="asset-rating-summary" data-asset-id="${escapeHTML(a.id)}">☆☆☆☆☆</span>
-                            <span class="asset-download-count" data-asset-id="${escapeHTML(a.id)}"></span>
-                        </div>
-                        ${fileMeta}
-                    </div>
-                </div>
-            </div>`;
-    });
-    grid.innerHTML = cardsHTML.join('');
+    grid.innerHTML = itemsFiltrados.map((a, i) => renderAssetCard(a, i)).join('');
     initLazyMedia();
-    itemsFiltrados.forEach(a => refreshCardStats(a.id));
 }
 
-// --- Hero stat strip (index.html only). Purely derived from the in-memory
-// asset list, no extra network calls.
 function updateHeroStats() {
     const countEl = document.getElementById('statAssetCount');
     const catEl = document.getElementById('statCategoryCount');
@@ -925,63 +998,79 @@ if (document.getElementById('assetImgList')) {
     setImageFields([]);
 }
 
+// ============================================================================
+// ASSET DETAIL MODAL
+// ============================================================================
+
+// Small helpers so the detail modal template stays readable.
+function renderDetailSlideNav(imagenes) {
+    if (imagenes.length < 2) return '';
+    return `
+        <button type="button" aria-label="Imagen anterior" onclick="changeDetailSlide(-1)" class="slide-nav prev absolute left-3 top-1/2 -translate-y-1/2 bg-black/60 hover:bg-blue-600 text-white p-3 rounded-xl z-10">‹</button>
+        <button type="button" aria-label="Imagen siguiente" onclick="changeDetailSlide(1)" class="slide-nav next absolute right-3 top-1/2 -translate-y-1/2 bg-black/60 hover:bg-blue-600 text-white p-3 rounded-xl z-10">›</button>
+        <div class="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5 z-10">
+            ${imagenes.map((_, i) => `<span class="detail-dot w-2 h-2 rounded-full ${i === 0 ? 'bg-blue-500' : 'bg-white/30'}"></span>`).join('')}
+        </div>`;
+}
+
+function renderDetailMeta(a) {
+    if (!a.fileFormat && !a.fileSize) return '';
+    return `
+        <div class="flex gap-3 mb-8 font-mono">
+            ${a.fileFormat ? `<div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Format</p><p class="font-bold">${escapeHTML(a.fileFormat)}</p></div>` : ''}
+            ${a.fileSize   ? `<div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Size</p><p class="font-bold">${escapeHTML(a.fileSize)}</p></div>`   : ''}
+            <div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Descargas</p><p id="downloadCount-${escapeHTML(String(a.id))}" class="font-bold">—</p></div>
+        </div>`;
+}
+
 function buildAssetDetailHTML(a) {
     const statusLabels = { 'nenhum': 'Standard', 'novo': 'New', 'limitado': 'Limited', 'recomendado': 'Recommended' };
     const label = statusLabels[a.status] || a.status;
     const imagenes = (a.imagenes && a.imagenes.length) ? a.imagenes : (a.img ? [a.img] : []);
     window.__detailImages = imagenes;
     window.__detailIndex = 0;
-
-    const navButtons = imagenes.length > 1 ? `
-                <button onclick="changeDetailSlide(-1)" class="slide-nav prev absolute left-3 top-1/2 -translate-y-1/2 bg-black/60 hover:bg-blue-600 text-white p-3 rounded-xl z-10">‹</button>
-                <button onclick="changeDetailSlide(1)" class="slide-nav next absolute right-3 top-1/2 -translate-y-1/2 bg-black/60 hover:bg-blue-600 text-white p-3 rounded-xl z-10">›</button>
-                <div class="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5 z-10">
-                    ${imagenes.map((_, i) => `<span class="detail-dot w-2 h-2 rounded-full ${i === 0 ? 'bg-blue-500' : 'bg-white/30'}"></span>`).join('')}
-                </div>` : '';
+    const safeId = escapeHTML(String(a.id));
 
     return `
         <div class="bg-slate-900 rounded-3xl overflow-hidden border border-white/5 shadow-2xl">
             <div class="relative">
                 <div id="detailMedia">${renderMedia(imagenes[0] || '', 'w-full h-[450px]', '', true)}</div>
-                ${navButtons}
+                ${renderDetailSlideNav(imagenes)}
             </div>
             <div class="p-10 text-left">
                 ${(a.categoria && a.categoria.length) ? `<span class="inline-block mb-4 px-3 py-1 rounded-full text-[10px] font-black uppercase bg-cyan-400/10 text-cyan-400 border border-cyan-400/20">${escapeHTML(a.categoria.join(' / '))}</span>` : ''}
                 <div class="flex justify-between items-center mb-6 gap-3">
                     <h1 class="font-display text-4xl font-bold">${escapeHTML(a.title)}</h1>
                     <div class="flex items-center gap-2 shrink-0">
-                        <button onclick="toggleFavorite('${escapeHTML(a.id)}')" data-id="${escapeHTML(a.id)}" data-context="modal" class="fav-btn bg-black/20 border border-white/5 hover:bg-slate-800 w-11 h-11 flex items-center justify-center rounded-xl transition">
+                        <button type="button" aria-label="Añadir a favoritos" onclick="toggleFavorite('${safeId}')" data-id="${safeId}" data-context="modal" class="fav-btn bg-black/20 border border-white/5 hover:bg-slate-800 w-11 h-11 flex items-center justify-center rounded-xl transition">
                             <svg class="fav-icon" width="18" height="18" viewBox="0 0 24 24" fill="${isFavorite(a.id) ? '#ef4444' : 'none'}" stroke="${isFavorite(a.id) ? '#ef4444' : '#ffffff'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.7-4.35-9.3-8.28C1.1 10.3 1.7 6.9 4.6 5.4c2.4-1.24 5-.3 6.4 1.7 1.4-2 4-2.94 6.4-1.7 2.9 1.5 3.5 4.9 1.9 7.32C18.7 16.65 12 21 12 21z"/></svg>
                         </button>
                         <span class="font-mono px-4 py-2 rounded-full text-[10px] font-black uppercase bg-blue-600/20 text-blue-400 border border-blue-500/20">${escapeHTML(label)}</span>
                     </div>
                 </div>
 
-                <div id="ratingWidget-${a.id}" class="flex items-center gap-3 mb-6">
+                <div id="ratingWidget-${safeId}" class="flex items-center gap-3 mb-6">
                     <span class="text-slate-500 text-xs">Cargando valoración…</span>
                 </div>
 
-                ${(a.fileFormat || a.fileSize) ? `
-                <div class="flex gap-3 mb-8 font-mono">
-                    ${a.fileFormat ? `<div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Format</p><p class="font-bold">${escapeHTML(a.fileFormat)}</p></div>` : ''}
-                    ${a.fileSize ? `<div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Size</p><p class="font-bold">${escapeHTML(a.fileSize)}</p></div>` : ''}
-                    <div class="bg-black/20 border border-white/5 rounded-xl px-4 py-3"><p class="text-slate-500 text-[10px] uppercase font-bold">Descargas</p><p id="downloadCount-${a.id}" class="font-bold">—</p></div>
-                </div>` : ''}
+                ${renderDetailMeta(a)}
+
                 <div class="bg-black/20 p-6 rounded-2xl border border-white/5 mb-8">
                     <h3 class="font-display text-blue-500 font-bold mb-2 uppercase text-xs tracking-wide">Description</h3>
                     <p class="text-slate-300 leading-relaxed whitespace-pre-line">${escapeHTML(a.desc || 'No technical description available.')}</p>
                 </div>
-                <button onclick="handleDownload('${escapeHTML(a.id)}')" class="w-full bg-blue-600 py-6 rounded-2xl font-black text-2xl hover:bg-blue-500 transition shadow-xl shadow-blue-900/30">
+
+                <button type="button" onclick="handleDownload('${safeId}')" class="w-full bg-blue-600 py-6 rounded-2xl font-black text-2xl hover:bg-blue-500 transition shadow-xl shadow-blue-900/30">
                     DOWNLOAD
                 </button>
 
                 <div class="mt-10 pt-8 border-t border-white/5">
                     <h3 class="font-display text-blue-500 font-bold mb-4 uppercase text-xs tracking-wide">Comentarios</h3>
                     <div class="flex gap-3 mb-5">
-                        <input type="text" id="commentInput-${a.id}" maxlength="500" placeholder="Escribe un comentario..." class="flex-1 bg-black/40 p-4 rounded-xl border border-white/5 outline-none focus:border-blue-500 text-sm">
-                        <button id="commentBtn-${a.id}" onclick="submitComment('${escapeHTML(a.id)}')" class="bg-blue-600 hover:bg-blue-500 px-5 rounded-xl font-bold text-sm transition">Enviar</button>
+                        <input type="text" id="commentInput-${safeId}" maxlength="500" placeholder="Escribe un comentario..." class="flex-1 bg-black/40 p-4 rounded-xl border border-white/5 outline-none focus:border-blue-500 text-sm">
+                        <button type="button" id="commentBtn-${safeId}" onclick="submitComment('${safeId}')" class="bg-blue-600 hover:bg-blue-500 px-5 rounded-xl font-bold text-sm transition">Enviar</button>
                     </div>
-                    <div id="commentsList-${a.id}" class="space-y-3">
+                    <div id="commentsList-${safeId}" class="space-y-3">
                         <p class="text-slate-500 text-sm">Cargando comentarios…</p>
                     </div>
                 </div>
@@ -1061,9 +1150,7 @@ function changeDetailSlide(dir) {
     if (imgs.length < 2) return;
     window.__detailIndex = (window.__detailIndex + dir + imgs.length) % imgs.length;
     const media = document.getElementById('detailMedia');
-    if (media) {
-        media.innerHTML = renderMedia(imgs[window.__detailIndex], 'w-full h-[450px]', 'fade-anim', true);
-    }
+    if (media) media.innerHTML = renderMedia(imgs[window.__detailIndex], 'w-full h-[450px]', 'fade-anim', true);
     document.querySelectorAll('.detail-dot').forEach((dot, i) => {
         dot.classList.toggle('bg-blue-500', i === window.__detailIndex);
         dot.classList.toggle('bg-white/30', i !== window.__detailIndex);
@@ -1071,18 +1158,18 @@ function changeDetailSlide(dir) {
 }
 
 function resetForm() {
-    document.getElementById('editId').value = "";
-    document.getElementById('editSource').value = "";
-    document.getElementById('assetTitle').value = "";
-    document.getElementById('assetDesc').value = "";
-    document.getElementById('assetDescShort').value = "";
-    document.getElementById('assetFileUrl').value = "";
-    document.getElementById('assetFileFormat').value = "";
-    document.getElementById('assetFileSize').value = "";
-    document.getElementById('assetCategory').value = "";
+    ['editId', 'editSource', 'assetTitle', 'assetDesc', 'assetDescShort', 'assetFileUrl',
+     'assetFileFormat', 'assetFileSize', 'assetCategory'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    });
     setImageFields([]);
     document.getElementById('panelTitle').innerText = "Editor Mode";
 }
+
+// ============================================================================
+// DOWNLOAD
+// ============================================================================
 
 function handleDownload(id) {
     const a = allAssets.find(x => x.id == id);
@@ -1096,13 +1183,9 @@ function handleDownload(id) {
     }
 }
 
-// ============================================================
-// Comments, ratings & download counters
-// Backed by new public Worker endpoints (see worker.js).
-// These are unauthenticated on purpose (any visitor can comment/rate),
-// so every value coming back from the server is treated as untrusted and
-// escaped before it ever touches innerHTML.
-// ============================================================
+// ============================================================================
+// COMMENTS / RATINGS / DOWNLOADS
+// ============================================================================
 
 async function loadAssetExtras(id) {
     try {
@@ -1125,10 +1208,11 @@ async function loadAssetExtras(id) {
 function refreshCardStats(id) {
     const data = __extrasCache[id];
     if (!data) return;
-    document.querySelectorAll(`.asset-rating-summary[data-asset-id="${id}"]`).forEach(el => {
+    const safeId = CSS.escape(String(id));
+    document.querySelectorAll(`.asset-rating-summary[data-asset-id="${safeId}"]`).forEach(el => {
         el.innerHTML = starsHTML(data.rating.average) + (data.rating.count ? ` <span class="text-slate-600">(${data.rating.count})</span>` : '');
     });
-    document.querySelectorAll(`.asset-download-count[data-asset-id="${id}"]`).forEach(el => {
+    document.querySelectorAll(`.asset-download-count[data-asset-id="${safeId}"]`).forEach(el => {
         el.innerText = data.downloads ? `· ${data.downloads} descargas` : '';
     });
 }
@@ -1150,8 +1234,9 @@ function renderRatingWidget(id) {
     let myRating = 0;
     try { myRating = parseInt(localStorage.getItem(myKey) || '0', 10) || 0; } catch (e) { }
 
+    const safeId = escapeHTML(String(id));
     const starButtons = [1, 2, 3, 4, 5].map(n => `
-        <button type="button" onclick="submitRating('${escapeHTML(id)}', ${n})" class="rate-star text-2xl leading-none ${n <= myRating ? 'text-yellow-500' : 'text-slate-600'} hover:text-yellow-400 transition" data-n="${n}">★</button>
+        <button type="button" onclick="submitRating('${safeId}', ${n})" class="rate-star text-2xl leading-none ${n <= myRating ? 'text-yellow-500' : 'text-slate-600'} hover:text-yellow-400 transition" data-n="${n}">★</button>
     `).join('');
 
     el.innerHTML = `
@@ -1162,7 +1247,7 @@ function renderRatingWidget(id) {
 
 let __ratingInFlight = {};
 async function submitRating(id, stars) {
-    if (__ratingInFlight[id]) return; // prevents double-submit from a rapid double click
+    if (__ratingInFlight[id]) return;
     __ratingInFlight[id] = true;
     try {
         const res = await fetch(`${WORKER_URL}/rating/${id}`, {
@@ -1193,7 +1278,7 @@ function renderComments(id) {
         list.innerHTML = `<p class="text-slate-500 text-sm">Sé el primero en comentar.</p>`;
         return;
     }
-    // Every field here comes from other users, so it is always escaped.
+    // Every field here comes from other users → escaped.
     list.innerHTML = comments.map(c => `
         <div class="bg-black/20 border border-white/5 rounded-xl p-4">
             <div class="flex justify-between items-center mb-1">
@@ -1221,7 +1306,7 @@ async function submitComment(id) {
     const text = input.value.trim();
     if (!text) { showNotify("Escribe algo antes de enviar.", "error"); return; }
     if (text.length > 500) { showNotify("Máximo 500 caracteres.", "error"); return; }
-    if (__commentSubmitting[id]) return; // basic client-side rate limit against spam-clicking
+    if (__commentSubmitting[id]) return;
     __commentSubmitting[id] = true;
     if (btn) { btn.disabled = true; btn.classList.add('opacity-50'); }
 
@@ -1249,8 +1334,6 @@ async function submitComment(id) {
     }
 }
 
-// Public visitors are not necessarily logged into the admin user system,
-// so fall back to a friendly generic name when there's no registered device.
 function safeUsername() {
     try {
         const u = findUserByDeviceId(getDeviceId());
@@ -1270,6 +1353,10 @@ async function trackDownload(id) {
         refreshCardStats(id);
     } catch (e) { /* counting a download must never break the actual download */ }
 }
+
+// ============================================================================
+// ADMIN — tab switching
+// ============================================================================
 
 function switchTab(t) {
     document.getElementById('sectionForm').classList.toggle('hidden', t !== 'create');
@@ -1292,8 +1379,10 @@ function switchTab(t) {
     updateAdminStats();
 }
 
-// --- Admin comment moderation: pulls every asset's comments from the
-// Worker (admin-authenticated) so abusive/spam comments can be removed.
+// ============================================================================
+// ADMIN — comment moderation
+// ============================================================================
+
 async function renderCommentsModeration() {
     const list = document.getElementById('commentsModerationList');
     if (!list) return;
@@ -1311,7 +1400,7 @@ async function renderCommentsModeration() {
             const asset = allAssets.find(x => x.id == c.assetId);
             const assetTitle = asset ? asset.title : `Asset #${c.assetId}`;
             const deleteBtn = vyn
-                ? `<button onclick="deleteCommentAdmin('${escapeHTML(c.assetId)}', '${escapeHTML(c.id)}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase shrink-0">Delete</button>`
+                ? `<button type="button" onclick="deleteCommentAdmin('${escapeHTML(String(c.assetId))}', '${escapeHTML(String(c.id))}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase shrink-0">Delete</button>`
                 : '';
             return `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
@@ -1342,9 +1431,13 @@ async function deleteCommentAdmin(assetId, commentId) {
     }
 }
 
+// ============================================================================
+// ADMIN — manage / pending / users lists
+// ============================================================================
+
 function renderManageList() {
     const l = document.getElementById('existingAssetsList');
-    if(!l) return;
+    if (!l) return;
     const combined = assets.map(a => ({ ...a, __source: 'admin' }));
     if (!combined.length) {
         l.innerHTML = "<p class='text-slate-500 text-center py-10'>Empty.</p>";
@@ -1352,19 +1445,18 @@ function renderManageList() {
     }
     const myUsername = getCurrentUsername().trim().toLowerCase();
     const vyn = isCurrentUserVyn();
-    const html = combined.map(a => {
+    l.innerHTML = combined.map(a => {
         const tag = `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">${escapeHTML(a.autor || 'Admin')}</span>`;
-        // UX-only gate: hides/disables the button for non-owners so the panel
-        // doesn't invite an action that will just get rejected. The real
-        // enforcement lives server-side in /save-assets on the Worker, since
-        // this check alone can be bypassed from the browser.
+        // UX-only gate. Real enforcement lives server-side in /save-assets.
         const isOwner = vyn || (a.autor || '').trim().toLowerCase() === myUsername;
+        const safeId = escapeHTML(String(a.id));
+        const safeSource = escapeHTML(a.__source);
         const editBtn = isOwner
-            ? `<button onclick="prepareEdit('${escapeHTML(a.id)}', '${escapeHTML(a.__source)}')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>`
-            : `<button disabled title="Solo el dueño de este asset (o Vyn) puede editarlo" class="bg-slate-800 text-slate-600 px-4 py-2 rounded-xl text-xs font-bold uppercase cursor-not-allowed">Edit</button>`;
+            ? `<button type="button" onclick="prepareEdit('${safeId}', '${safeSource}')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>`
+            : `<button type="button" disabled title="Solo el dueño de este asset (o Vyn) puede editarlo" class="bg-slate-800 text-slate-600 px-4 py-2 rounded-xl text-xs font-bold uppercase cursor-not-allowed">Edit</button>`;
         const deleteBtn = isOwner
-            ? `<button onclick="openDeleteModal('${escapeHTML(a.id)}', '${escapeHTML(a.__source)}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Delete</button>`
-            : `<button disabled title="Solo el dueño de este asset (o Vyn) puede eliminarlo" class="bg-slate-800 text-slate-600 px-4 py-2 rounded-xl text-xs font-bold uppercase cursor-not-allowed">Delete</button>`;
+            ? `<button type="button" onclick="openDeleteModal('${safeId}', '${safeSource}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Delete</button>`
+            : `<button type="button" disabled title="Solo el dueño de este asset (o Vyn) puede eliminarlo" class="bg-slate-800 text-slate-600 px-4 py-2 rounded-xl text-xs font-bold uppercase cursor-not-allowed">Delete</button>`;
         return `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
                 <div class="flex items-center gap-4">
@@ -1380,7 +1472,6 @@ function renderManageList() {
                 </div>
             </div>`;
     }).join('');
-    l.innerHTML = html;
 }
 
 function renderPendingList() {
@@ -1392,10 +1483,11 @@ function renderPendingList() {
     }
     const myDeviceId = getDeviceId();
 
-    const html = pendingAssets.map(a => {
+    l.innerHTML = pendingAssets.map(a => {
         const record = pendingQueue.find(x => x.id == a.queueId);
         const isOwn = record && record.submittedBy === myDeviceId;
         const tag = `<span class="bg-yellow-600/20 text-yellow-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">${escapeHTML(a.autor || 'Admin')}</span>`;
+        const safeQueueId = escapeHTML(String(a.queueId));
 
         return `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
@@ -1408,15 +1500,15 @@ function renderPendingList() {
                     </div>
                 </div>
                 <div class="flex gap-2">
-                    <button onclick="prepareEdit('${escapeHTML(a.queueId)}', 'pending')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>
-                    <button onclick="approvePending('${escapeHTML(a.queueId)}')" ${isOwn ? 'disabled title="No puedes aprobar tu propia publicación"' : ''}
+                    <button type="button" onclick="prepareEdit('${safeQueueId}', 'pending')" class="bg-blue-600/10 text-blue-400 px-4 py-2 rounded-xl text-xs font-bold uppercase">Edit</button>
+                    <button type="button" onclick="approvePending('${safeQueueId}')" ${isOwn ? 'disabled title="No puedes aprobar tu propia publicación"' : ''}
                         class="px-4 py-2 rounded-xl text-xs font-bold uppercase ${isOwn ? 'bg-slate-800 text-slate-600 cursor-not-allowed' : 'bg-green-600/10 text-green-500'}">Aprobar</button>
-                    <button onclick="openDeleteModal('${escapeHTML(a.queueId)}', 'pending')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">${isOwn ? 'Retirar' : 'Rechazar'}</button>
+                    <button type="button" onclick="openDeleteModal('${safeQueueId}', 'pending')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">${isOwn ? 'Retirar' : 'Rechazar'}</button>
                 </div>
             </div>`;
     }).join('');
-    l.innerHTML = html;
 }
+
 async function approvePending(id) {
     try {
         await workerCall('/pending-approve', { id, deviceId: getDeviceId() });
@@ -1464,7 +1556,7 @@ function renderUsersList() {
         l.innerHTML = "<p class='text-slate-500 text-center py-10'>No hay usuarios registrados.</p>";
         return;
     }
-    const html = users.map(u => {
+    l.innerHTML = users.map(u => {
         const protegido = isProtectedUser(u);
         const estadoTag = u.banned
             ? `<span class="bg-red-600/20 text-red-500 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Baneado</span>`
@@ -1476,11 +1568,10 @@ function renderUsersList() {
                     ${protegido ? `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Creador</span>` : estadoTag}
                 </div>
                 <div class="flex gap-2">
-                    ${(!protegido && !u.banned && puedeEliminar) ? `<button onclick="openDeleteUserModal(${escapeHTML(u.id)})" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Eliminar</button>` : ''}
+                    ${(!protegido && !u.banned && puedeEliminar) ? `<button type="button" onclick="openDeleteUserModal('${escapeHTML(String(u.id))}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Eliminar</button>` : ''}
                 </div>
             </div>`;
     }).join('');
-    l.innerHTML = html;
 }
 
 let userToDelete = null;
@@ -1493,7 +1584,7 @@ function closeDeleteUserModal() {
 }
 document.getElementById('confirmDeleteUserBtn')?.addEventListener('click', async () => {
     if (!isCurrentUserVyn()) { closeDeleteUserModal(); return; }
-    const u = getAdminUsersList().find(x => x.id == userToDelete);
+    const u = getAdminUsersList().find(x => String(x.id) === String(userToDelete));
     if (!u || isProtectedUser(u)) { closeDeleteUserModal(); return; }
 
     u.banned = true;
@@ -1515,6 +1606,10 @@ document.getElementById('confirmDeleteUserBtn')?.addEventListener('click', async
         location.href = 'index.html';
     }
 });
+
+// ============================================================================
+// ADMIN — asset delete modal
+// ============================================================================
 
 function openDeleteModal(id, source = 'admin') {
     assetToDelete = id;
@@ -1543,14 +1638,13 @@ document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () 
         const previousAssets = assets;
         assets = assets.filter(x => x.id != assetToDelete);
         try {
-            await persistAssets();          // KV-only now, no more Vyn-assets.js commit
+            await persistAssets();
             renderManageList();
             updateAdminStats();
             closeDeleteModal();
             showNotify("Asset removed!");
         } catch (e) {
-            // The Worker rejected the delete (e.g. not the owner and not Vyn) —
-            // restore local state so the UI doesn't show a change that never saved.
+            // Worker rejected it (not the owner?) — undo the local change.
             assets = previousAssets;
             renderManageList();
             closeDeleteModal();
@@ -1559,22 +1653,38 @@ document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () 
     }
 });
 
+// ============================================================================
+// ASSET BOOTSTRAP — KV is the only source of truth
+// ============================================================================
+
+// Pulls the KV-backed asset cache straight from the Worker. This is the
+// ONLY source for the asset list — there is no static Vyn-assets.js file.
+// On network failure we surface #errorBanner and replace the skeletons.
 async function refreshAssetsFromKV() {
+    const grid = document.getElementById('assetGrid');
+    const banner = document.getElementById('errorBanner');
     try {
         const res = await fetch(`${WORKER_URL}/assets`);
-        if (!res.ok) return;
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (!Array.isArray(data.items)) return;
+        if (!Array.isArray(data.items)) throw new Error('Bad payload');
 
         assets = data.items.map(fromFileFormat);
         allAssets.length = 0;
         allAssets.push(...assets);
         __kvLoaded = true;
 
-        if (document.getElementById('assetGrid')) { renderFilters(); renderAssetGrid(); updateHeroStats(); }
-        if (document.getElementById('existingAssetsList') && !document.getElementById('sectionManage')?.classList.contains('hidden')) renderManageList();
+        if (grid) { renderFilters(); renderAssetGrid(); updateHeroStats(); }
+        if (document.getElementById('existingAssetsList') && !document.getElementById('sectionManage')?.classList.contains('hidden')) {
+            renderManageList();
+        }
     } catch (e) {
-        __kvLoaded = true; // avoid infinite "Cargando…" on network error
+        __kvLoaded = true;
+        if (banner) banner.classList.add('show');
+        if (grid && !allAssets.length) {
+            grid.innerHTML = `<p class="col-span-full text-center text-slate-500 py-16">No se pudieron cargar los assets.</p>`;
+        }
+        console.warn('refreshAssetsFromKV failed:', e);
     }
 }
 if (document.getElementById('assetGrid') || document.getElementById('adminContent')) {
