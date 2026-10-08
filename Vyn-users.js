@@ -21,10 +21,10 @@ var adminUsers = [
         "creado": "2026-08-19T00:03:13.597Z"
     },
     {
-        "id": "53023930-a454-4f01-a79c-10e8774d3eaf",
+        "id": "04176b3c-57ce-4464-a796-2af70d3ba478",
         "usuario": "Root",
         "deviceId": "dev-mszbvp1p-k0vb5m8b2uot4p9le9hl",
         "banned": false,
-        "creado": "2026-10-08T16:11:00.292Z"
+        "creado": "2026-10-08T16:13:28.777Z"
     }
 ];
