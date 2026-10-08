@@ -1,14 +1,5 @@
 const WORKER_URL = 'https://coreassets-admin.normal8607.workers.dev';
 
-// ============================================================================
-// UTILITIES
-// ============================================================================
-
-// Security: escape any untrusted string before it goes into innerHTML.
-// RULE: escape at the HTML-insertion point, never earlier. If a value is
-// escaped twice, `&` becomes `&amp;amp;`; if it's escaped nowhere, XSS.
-// Every value that did not originate from a hardcoded template string in
-// this file MUST pass through here right before being concatenated.
 function escapeHTML(str) {
     return String(str == null ? '' : str)
         .replace(/&/g, '&amp;')
@@ -19,8 +10,6 @@ function escapeHTML(str) {
         .replace(/`/g, '&#96;');
 }
 
-// Performance: generic debounce, used to avoid firing a network request or
-// a re-render on every single keystroke/click.
 function debounce(fn, wait = 250) {
     let t = null;
     return (...args) => {
@@ -29,23 +18,12 @@ function debounce(fn, wait = 250) {
     };
 }
 
-// UUID with fallback (file:// lacks crypto.randomUUID on some browsers).
 function newId() {
     try {
         if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
-    } catch (e) { /* fall through */ }
+    } catch (e) { }
     return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 }
-
-// ============================================================================
-// SESSION & LOGIN
-// ============================================================================
-
-// The password is NEVER persisted. The session token (issued by the Worker,
-// 1h TTL, stored in sessionStorage) is what survives reloads. If the user
-// comes back after the token expired, they type the password once more.
-// This is the correct security posture: a stolen localStorage entry is
-// useless after the tab is closed.
 
 function getSessionToken() {
     return sessionStorage.getItem('admin_session');
@@ -66,9 +44,6 @@ async function workerLogin(password) {
         body: JSON.stringify({ password, deviceId: getDeviceId() })
     });
     const data = await res.json().catch(() => ({}));
-
-    // Server-side rate limit (see worker.js /login). Handle separately so
-    // the user sees "wait X seconds" instead of the generic wrong-password.
     if (res.status === 429) {
         throw new Error(data.error || 'Demasiados intentos. Espera un momento.');
     }
@@ -76,9 +51,6 @@ async function workerLogin(password) {
     return data.token;
 }
 
-// Generalized authenticated POST used for most admin actions. The caller
-// supplies the endpoint and body; this handles the auth header, the 401
-// refresh, and error unwrapping in one place.
 async function workerCall(endpoint, body) {
     const token = getSessionToken();
     if (!token) throw new Error('Sesión no iniciada');
@@ -96,7 +68,6 @@ async function workerCall(endpoint, body) {
     return data;
 }
 
-// Older helper kept for /save-users (it still sends a full file's text).
 async function workerSave(endpoint, content, message) {
     const token = getSessionToken();
     if (!token) throw new Error('Sesión no iniciada');
@@ -123,9 +94,6 @@ function forgetAdminPass() {
     if (document.getElementById('adminContent')) location.href = 'admin.html';
 }
 
-// --- Login-attempt brake (client-side, complements the Worker's own limit).
-// This is purely a UX deterrent against casual brute-forcing — the real
-// brake lives on the Worker, which counts by IP.
 const LOGIN_ATTEMPTS_KEY = 'coreassets_login_attempts';
 function registerFailedLoginAttempt() {
     let data;
@@ -172,20 +140,12 @@ function tryAutoLoginAdmin() {
     const loginOverlay = document.getElementById('loginOverlay');
     const adminContent = document.getElementById('adminContent');
     if (!loginOverlay || !adminContent) return;
-    // If a session token survived a reload (same tab, < 1h), skip the login
-    // form entirely. This is what makes reloads feel instant.
     if (getSessionToken()) {
         handlePostLoginUserCheck();
     }
 }
 tryAutoLoginAdmin();
 
-// --- Quick login popover on index.html ---------------------------------------
-
-// Module-level: whether the inline password field is currently visible.
-// The document-level click listener below reads this and closes the popover
-// when the user clicks outside. Documented because it looks like state that
-// could be local, but isn't.
 let adminQuickLoginOpen = false;
 
 function showAdminQuickLogin() {
@@ -219,7 +179,7 @@ function hideAdminQuickLogin() {
     const box = document.getElementById('adminLoginBox');
     const input = document.getElementById('adminQuickPass');
     if (!btn || !box) return;
-    if (input) { input.blur(); input.value = ''; }   // clear on close
+    if (input) { input.blur(); input.value = ''; }
     btn.classList.remove('blur-sm', 'opacity-30', 'pointer-events-none');
     box.classList.add('hidden');
     adminQuickLoginOpen = false;
@@ -253,7 +213,6 @@ async function checkAdminQuickLogin(value) {
     }
 }
 
-// Wire up the quick-login field once, at module load (not on each open).
 (function wireQuickLoginField() {
     const input = document.getElementById('adminQuickPass');
     if (!input) return;
@@ -263,7 +222,6 @@ async function checkAdminQuickLogin(value) {
     });
 })();
 
-// Wire up the main login form on admin.html.
 (function wireLoginForm() {
     const passInput = document.getElementById('pass');
     if (!passInput) return;
@@ -272,20 +230,130 @@ async function checkAdminQuickLogin(value) {
     });
 })();
 
+const DEVICE_ID_KEY = 'coreassets_device_id';
+
+function getDeviceId() {
+    try {
+        let id = localStorage.getItem(DEVICE_ID_KEY);
+        if (!id) {
+            id = 'dev-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+            localStorage.setItem(DEVICE_ID_KEY, id);
+        }
+        return id;
+    } catch (e) { return 'dev-unknown'; }
+}
+
+const LOCAL_USER_KEY = 'coreassets_local_user';
+
+function getLocalUser() {
+    try { return JSON.parse(localStorage.getItem(LOCAL_USER_KEY)); }
+    catch (e) { return null; }
+}
+
+function setLocalUser(u) {
+    try {
+        if (!u) return;
+        localStorage.setItem(LOCAL_USER_KEY, JSON.stringify({
+            id: u.id,
+            usuario: u.usuario,
+            deviceId: u.deviceId,
+            creado: u.creado
+        }));
+    } catch (e) { }
+}
+
+function clearLocalUser() {
+    try { localStorage.removeItem(LOCAL_USER_KEY); } catch (e) { }
+}
+
+function getAdminUsersList() {
+    return (typeof adminUsers !== 'undefined' && Array.isArray(adminUsers)) ? adminUsers : [];
+}
+
+function findUserByDeviceId(deviceId) {
+    return getAdminUsersList().find(u => u.deviceId === deviceId);
+}
+
+function usernameTaken(name) {
+    const n = (name || '').trim().toLowerCase();
+    if (!n) return true;
+    return getAdminUsersList().some(u => (u.usuario || '').trim().toLowerCase() === n);
+}
+
+function isProtectedUser(u) {
+    return (u.usuario || '').trim().toLowerCase() === 'vyn';
+}
+
+function isCurrentUserVyn() {
+    const current = findUserByDeviceId(getDeviceId());
+    return !!current && isProtectedUser(current);
+}
+
+function getCurrentUsername() {
+    const current = findUserByDeviceId(getDeviceId());
+    return (current && current.usuario) ? current.usuario : 'Admin';
+}
+
+async function refreshUsersFromKV() {
+    try {
+        const res = await fetch(`${WORKER_URL}/users`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!Array.isArray(data.items)) return;
+        adminUsers.length = 0;
+        adminUsers.push(...data.items);
+    } catch (e) {
+        console.warn('refreshUsersFromKV failed:', e);
+    }
+}
+
 async function handlePostLoginUserCheck() {
+    await refreshUsersFromKV();
+
     const deviceId = getDeviceId();
     const existing = findUserByDeviceId(deviceId);
 
     if (existing) {
         if (existing.banned) {
             clearSessionToken();
+            clearLocalUser();
             document.getElementById('loginOverlay')?.classList.remove('hidden');
             document.getElementById('adminContent')?.classList.add('hidden');
             showNotify("Acceso denegado: este dispositivo fue baneado.", "error");
             return;
         }
+        setLocalUser(existing);
         enterAdminPanel();
         return;
+    }
+
+    const local = getLocalUser();
+    if (local && local.deviceId === deviceId && local.usuario) {
+        const nameLower = local.usuario.trim().toLowerCase();
+        const takenByOther = getAdminUsersList().some(u =>
+            u.deviceId !== deviceId &&
+            (u.usuario || '').trim().toLowerCase() === nameLower
+        );
+
+        if (!takenByOther) {
+            const restored = {
+                id: local.id || newId(),
+                usuario: local.usuario,
+                deviceId,
+                banned: false,
+                creado: local.creado || new Date().toISOString()
+            };
+            adminUsers.push(restored);
+            try {
+                await persistUsers();
+                setLocalUser(restored);
+                enterAdminPanel();
+                return;
+            } catch (e) {
+                adminUsers.pop();
+                console.warn('Self-heal failed:', e);
+            }
+        }
     }
 
     showUsernamePrompt();
@@ -331,10 +399,17 @@ async function submitNewUsername() {
     }
     errorEl?.classList.add('hidden');
 
+    let ip = '';
+    try {
+        const r = await fetch(`${WORKER_URL}/whoami`);
+        if (r.ok) ip = (await r.json()).ip || '';
+    } catch (e) { }
+
     const newUser = {
         id: newId(),
         usuario: name,
         deviceId: getDeviceId(),
+        ip,
         banned: false,
         creado: new Date().toISOString()
     };
@@ -348,60 +423,10 @@ async function submitNewUsername() {
         return;
     }
 
+    setLocalUser(newUser);
     enterAdminPanel();
 }
 
-// ============================================================================
-// DEVICE IDENTITY
-// ============================================================================
-
-const DEVICE_ID_KEY = 'coreassets_device_id';
-
-function getDeviceId() {
-    try {
-        let id = localStorage.getItem(DEVICE_ID_KEY);
-        if (!id) {
-            id = 'dev-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-            localStorage.setItem(DEVICE_ID_KEY, id);
-        }
-        return id;
-    } catch (e) { return 'dev-unknown'; }
-}
-
-function getAdminUsersList() {
-    return (typeof adminUsers !== 'undefined' && Array.isArray(adminUsers)) ? adminUsers : [];
-}
-
-function findUserByDeviceId(deviceId) {
-    return getAdminUsersList().find(u => u.deviceId === deviceId);
-}
-
-function usernameTaken(name) {
-    const n = (name || '').trim().toLowerCase();
-    if (!n) return true;
-    return getAdminUsersList().some(u => (u.usuario || '').trim().toLowerCase() === n);
-}
-
-function isProtectedUser(u) {
-    return (u.usuario || '').trim().toLowerCase() === 'vyn';
-}
-
-function isCurrentUserVyn() {
-    const current = findUserByDeviceId(getDeviceId());
-    return !!current && isProtectedUser(current);
-}
-
-function getCurrentUsername() {
-    const current = findUserByDeviceId(getDeviceId());
-    return (current && current.usuario) ? current.usuario : 'Admin';
-}
-
-// ============================================================================
-// ASSETS — in-memory model
-// ============================================================================
-
-// Users are still written to Vyn-users.js on GitHub. Assets do NOT touch
-// GitHub anymore — they go straight to KV via persistAssets().
 function generateUsersFileContent(usersArr) {
     return "var adminUsers = " + JSON.stringify(usersArr, null, 4) + ";\n";
 }
@@ -411,8 +436,6 @@ async function persistUsers() {
     await workerSave('/save-users', content, 'Update admin users');
 }
 
-// Shape conversion between the file/KV format (Portuguese keys) and the
-// in-memory format used everywhere in the UI (English keys).
 function fromFileFormat(m) {
     return {
         id: m.id,
@@ -465,9 +488,6 @@ function setFileStatus(connected, label) {
     text.innerText = label;
 }
 
-// Rewrites the entire published list in KV. The Worker diffs old vs new to
-// enforce ownership rules server-side, so a 403 here means the caller
-// doesn't own one of the changed assets.
 async function persistAssets() {
     await workerCall('/save-assets', {
         assets: assets.map(toFileFormat),
@@ -486,7 +506,6 @@ async function refreshPendingFromServer() {
         const data = await res.json().catch(() => ({}));
         if (res.ok && Array.isArray(data.items)) {
             pendingQueue = data.items;
-            // Keep both: queueId for Worker calls, id for editing the asset.
             pendingAssets = data.items.map(x => {
                 const a = fromFileFormat(x.asset);
                 a.queueId = x.id;
@@ -506,19 +525,8 @@ async function updatePendingAsset(id, assetInFileFormat) {
     return workerCall('/pending-update', { id, asset: assetInFileFormat, deviceId: getDeviceId() });
 }
 
-// In-memory view used by the public gallery and by the admin stats.
-// Kept as a separate array so filters operate on a stable list even while
-// `assets` gets reassigned by refreshAssetsFromKV().
 const allAssets = [];
-
-// Per-asset cache: { comments, rating, downloads }. Populated lazily when
-// the user opens an asset's modal. Populated eagerly during grid render
-// only if already present (see renderAssetCard).
 const __extrasCache = {};
-
-// ============================================================================
-// FAVORITES
-// ============================================================================
 
 const FAVORITES_KEY = 'coreassets_favorites';
 
@@ -541,7 +549,7 @@ function toggleFavorite(id) {
         favs.splice(idx, 1);
         showNotify("Removed from favorites");
     }
-    try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(favs)); } catch (e) {  }
+    try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(favs)); } catch (e) { }
 
     const nowFav = isFavorite(id);
     document.querySelectorAll(`.fav-btn[data-id="${CSS.escape(String(id))}"]`).forEach(heartBtn => {
@@ -555,16 +563,10 @@ function toggleFavorite(id) {
     if (filtroActual === "FAVORITES") animarCambioDeGrid();
 }
 
-// ============================================================================
-// FILTERS & SEARCH
-// ============================================================================
-
 let filtroActual = "ALL";
 let busquedaActual = "";
 const LIMITE_CATEGORIAS_VISIBLES = 5;
 
-// True if the asset matches the current free-text search across title,
-// short desc, long desc, categories and author.
 function assetMatchesSearch(a) {
     if (!busquedaActual) return true;
     const q = busquedaActual.toLowerCase();
@@ -629,8 +631,6 @@ function crearBotonFiltro(categoriaNombre, etiqueta = null) {
     return btn;
 }
 
-// Wire up the search bar (index.html only). Debounced so typing doesn't
-// re-render on every keystroke.
 (function wireSearchBar() {
     const input = document.getElementById('searchInput');
     const wrapper = document.getElementById('searchWrapper');
@@ -663,10 +663,6 @@ function animarCambioDeGrid() {
     }, 200);
 }
 
-// ============================================================================
-// MEDIA RENDERING
-// ============================================================================
-
 function renderMedia(url, sizeClasses, extraClasses = '', interactive = false, lazy = false) {
     if (!url) return `<div class="${sizeClasses} ${extraClasses} bg-slate-800"></div>`;
 
@@ -674,13 +670,11 @@ function renderMedia(url, sizeClasses, extraClasses = '', interactive = false, l
     if (streamableMatch) {
         const params = interactive ? 'autoplay=1&muted=1&loop=1' : 'autoplay=1&muted=1&loop=1&nocontrols=1';
         const pointerStyle = interactive ? '' : 'pointer-events:none;';
-        // Streamable id is regex-restricted to [a-zA-Z0-9], safe to inline.
         return `<div class="${sizeClasses} ${extraClasses} relative overflow-hidden bg-black">
             <iframe src="https://streamable.com/e/${streamableMatch[1]}?${params}" class="absolute inset-0 w-full h-full" style="${pointerStyle}" frameborder="0" allow="autoplay; fullscreen" allowfullscreen></iframe>
         </div>`;
     }
 
-    // Escape URL before it enters any HTML attribute.
     const safeUrl = escapeHTML(url);
 
     if (/\.(mp4|webm|ogg)(\?.*)?$/i.test(url)) {
@@ -694,7 +688,6 @@ function renderMedia(url, sizeClasses, extraClasses = '', interactive = false, l
     return `<div class="${sizeClasses} ${extraClasses} bg-cover bg-center" style="background-image: url('${safeUrl}')"></div>`;
 }
 
-// Single shared IntersectionObserver reused for every grid render.
 let __lazyMediaObserver = null;
 function initLazyMedia() {
     if (!('IntersectionObserver' in window)) {
@@ -721,10 +714,6 @@ function initLazyMedia() {
     document.querySelectorAll('.lazy-media[data-bg-url]').forEach(el => __lazyMediaObserver.observe(el));
 }
 
-// ============================================================================
-// TOASTS
-// ============================================================================
-
 function showNotify(text, type = 'success') {
     const container = document.getElementById('notification-container');
     if (!container) return;
@@ -736,7 +725,6 @@ function showNotify(text, type = 'success') {
     };
     const s = styles[type] || styles.success;
     toast.className = `${s.color} text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 toast-in mb-2 font-bold z-50`;
-    // Escape: the text is user-derived in the "server said no" case.
     toast.innerHTML = `<span>${escapeHTML(text)}</span>`;
     container.appendChild(toast);
     setTimeout(() => {
@@ -745,10 +733,6 @@ function showNotify(text, type = 'success') {
         setTimeout(() => toast.remove(), 300);
     }, 3000);
 }
-
-// ============================================================================
-// ADMIN — stat strip & form
-// ============================================================================
 
 function updateAdminStats() {
     const totalEl   = document.getElementById('statTotalAssets');
@@ -767,7 +751,6 @@ function addImageField(value = '') {
     if (!list) return;
     const row = document.createElement('div');
     row.className = 'flex gap-2';
-    // value is user input → escape before injecting into the attribute.
     row.innerHTML = `
         <input type="text" value="${value ? escapeHTML(value) : ''}" placeholder="https://i.postimg.cc/..." class="asset-img-field flex-1 bg-black/50 p-4 rounded-xl border border-white/5 outline-none focus:border-blue-500">
         <button type="button" onclick="this.parentElement.remove()" class="bg-red-600/10 text-red-500 hover:bg-red-600 hover:text-white transition px-4 rounded-xl font-bold">✕</button>
@@ -843,7 +826,6 @@ async function saveEditedPublished(id, fields) {
     try {
         await persistAssets();
     } catch (e) {
-        // Worker rejected it (e.g. not the owner) — undo the local mutation.
         Object.assign(a, backup);
         renderManageList();
         throw e;
@@ -879,17 +861,6 @@ async function createNewAsset(fields) {
     }
 }
 
-// ============================================================================
-// PUBLIC GALLERY — render
-// ============================================================================
-
-// Renders a single asset card. Called from renderAssetGrid()'s map() so all
-// the per-card info (rating, downloads) is injected at build time — no
-// post-render querySelectorAll pass.
-//
-// ESCAPING: every value that came from KV (title, desc, images…) is escaped
-// here, at the HTML-insertion point. `a.id` goes through escapeHTML too,
-// because it flows into onclick="fn('...')" attributes.
 function renderAssetCard(a, index) {
     const statusLabels = { 'nenhum': '', 'novo': 'New', 'limitado': 'Limited', 'recomendado': 'Recommended' };
     const label = statusLabels[a.status] || a.status;
@@ -905,7 +876,6 @@ function renderAssetCard(a, index) {
             ${a.fileSize   ? `<span class="bg-white/5 text-slate-300 text-[10px] font-bold uppercase px-2 py-1 rounded-lg">${escapeHTML(a.fileSize)}</span>`   : ''}
         </div>` : '';
 
-    // #18: inline the cached rating/downloads at build time.
     const cache = __extrasCache[a.id];
     const ratingHtml = cache && cache.rating
         ? starsHTML(cache.rating.average) + (cache.rating.count ? ` <span class="text-slate-600">(${cache.rating.count})</span>` : '')
@@ -998,11 +968,6 @@ if (document.getElementById('assetImgList')) {
     setImageFields([]);
 }
 
-// ============================================================================
-// ASSET DETAIL MODAL
-// ============================================================================
-
-// Small helpers so the detail modal template stays readable.
 function renderDetailSlideNav(imagenes) {
     if (imagenes.length < 2) return '';
     return `
@@ -1167,25 +1132,17 @@ function resetForm() {
     document.getElementById('panelTitle').innerText = "Editor Mode";
 }
 
-// ============================================================================
-// DOWNLOAD
-// ============================================================================
-
 function handleDownload(id) {
     const a = allAssets.find(x => x.id == id);
     if (!a) return;
     if (a.fail === 'none') {
         window.open(a.fileUrl, '_blank');
-        trackDownload(id); // fire-and-forget, never blocks the actual download
+        trackDownload(id);
     } else {
         const e = { '404': "ERROR 404", 'virus': "RISK: Virus detected!", 'limit': "LIMIT EXCEEDED" };
         showNotify(e[a.fail], "error");
     }
 }
-
-// ============================================================================
-// COMMENTS / RATINGS / DOWNLOADS
-// ============================================================================
 
 async function loadAssetExtras(id) {
     try {
@@ -1278,7 +1235,6 @@ function renderComments(id) {
         list.innerHTML = `<p class="text-slate-500 text-sm">Sé el primero en comentar.</p>`;
         return;
     }
-    // Every field here comes from other users → escaped.
     list.innerHTML = comments.map(c => `
         <div class="bg-black/20 border border-white/5 rounded-xl p-4">
             <div class="flex justify-between items-center mb-1">
@@ -1351,12 +1307,8 @@ async function trackDownload(id) {
         const dlEl = document.getElementById(`downloadCount-${id}`);
         if (dlEl) dlEl.innerText = String(__extrasCache[id].downloads);
         refreshCardStats(id);
-    } catch (e) { /* counting a download must never break the actual download */ }
+    } catch (e) { }
 }
-
-// ============================================================================
-// ADMIN — tab switching
-// ============================================================================
 
 function switchTab(t) {
     document.getElementById('sectionForm').classList.toggle('hidden', t !== 'create');
@@ -1378,10 +1330,6 @@ function switchTab(t) {
     if (t === 'comments') renderCommentsModeration();
     updateAdminStats();
 }
-
-// ============================================================================
-// ADMIN — comment moderation
-// ============================================================================
 
 async function renderCommentsModeration() {
     const list = document.getElementById('commentsModerationList');
@@ -1431,10 +1379,6 @@ async function deleteCommentAdmin(assetId, commentId) {
     }
 }
 
-// ============================================================================
-// ADMIN — manage / pending / users lists
-// ============================================================================
-
 function renderManageList() {
     const l = document.getElementById('existingAssetsList');
     if (!l) return;
@@ -1447,7 +1391,6 @@ function renderManageList() {
     const vyn = isCurrentUserVyn();
     l.innerHTML = combined.map(a => {
         const tag = `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">${escapeHTML(a.autor || 'Admin')}</span>`;
-        // UX-only gate. Real enforcement lives server-side in /save-assets.
         const isOwner = vyn || (a.autor || '').trim().toLowerCase() === myUsername;
         const safeId = escapeHTML(String(a.id));
         const safeSource = escapeHTML(a.__source);
@@ -1561,11 +1504,13 @@ function renderUsersList() {
         const estadoTag = u.banned
             ? `<span class="bg-red-600/20 text-red-500 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Baneado</span>`
             : `<span class="bg-green-600/20 text-green-500 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Activo</span>`;
+        const ipTag = u.ip ? `<span class="text-slate-500 text-[10px] font-mono">${escapeHTML(u.ip)}</span>` : '';
         return `
             <div class="flex items-center justify-between bg-slate-900 p-4 rounded-2xl border border-white/5">
                 <div class="flex items-center gap-3">
                     <span class="font-bold text-sm">${escapeHTML(u.usuario)}</span>
                     ${protegido ? `<span class="bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase px-2 py-1 rounded-lg">Creador</span>` : estadoTag}
+                    ${ipTag}
                 </div>
                 <div class="flex gap-2">
                     ${(!protegido && !u.banned && puedeEliminar) ? `<button type="button" onclick="openDeleteUserModal('${escapeHTML(String(u.id))}')" class="bg-red-600/10 text-red-500 px-4 py-2 rounded-xl text-xs font-bold uppercase">Eliminar</button>` : ''}
@@ -1603,13 +1548,10 @@ document.getElementById('confirmDeleteUserBtn')?.addEventListener('click', async
 
     if (u.deviceId === getDeviceId()) {
         clearSessionToken();
+        clearLocalUser();
         location.href = 'index.html';
     }
 });
-
-// ============================================================================
-// ADMIN — asset delete modal
-// ============================================================================
 
 function openDeleteModal(id, source = 'admin') {
     assetToDelete = id;
@@ -1644,7 +1586,6 @@ document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () 
             closeDeleteModal();
             showNotify("Asset removed!");
         } catch (e) {
-            // Worker rejected it (not the owner?) — undo the local change.
             assets = previousAssets;
             renderManageList();
             closeDeleteModal();
@@ -1653,13 +1594,6 @@ document.getElementById('confirmDeleteBtn')?.addEventListener('click', async () 
     }
 });
 
-// ============================================================================
-// ASSET BOOTSTRAP — KV is the only source of truth
-// ============================================================================
-
-// Pulls the KV-backed asset cache straight from the Worker. This is the
-// ONLY source for the asset list — there is no static Vyn-assets.js file.
-// On network failure we surface #errorBanner and replace the skeletons.
 async function refreshAssetsFromKV() {
     const grid = document.getElementById('assetGrid');
     const banner = document.getElementById('errorBanner');
